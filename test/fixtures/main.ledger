@@ -1,3 +1,6 @@
+; Add accounts
+include accounts_list
+; Add opening balances
 include opening_balances-24.ledger
 
 2024/01/15 Grocery Store

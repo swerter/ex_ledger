@@ -1,7 +1,7 @@
 defmodule ExLedger.CLI do
   @moduledoc false
 
-  @switches [file: :string, help: :boolean]
+  @switches [file: :string, help: :boolean, strict: :boolean]
   @aliases [f: :file, h: :help]
 
   @doc """
@@ -20,7 +20,8 @@ defmodule ExLedger.CLI do
     %{
       file: opts[:file],
       command: List.first(commands) || "balance",
-      help?: opts[:help] || false
+      help?: opts[:help] || false,
+      strict?: opts[:strict] || false
     }
   end
 
@@ -34,7 +35,7 @@ defmodule ExLedger.CLI do
     System.halt(64)
   end
 
-  defp execute(%{file: file, command: "balance"}) do
+  defp execute(%{file: file, command: "balance", strict?: strict?}) do
     file
     |> File.read()
     |> case do
@@ -43,11 +44,18 @@ defmodule ExLedger.CLI do
         base_dir = Path.dirname(file)
 
         case ExLedger.LedgerParser.parse_ledger_with_includes(contents, base_dir) do
-          {:ok, transactions} ->
-            transactions
-            |> ExLedger.LedgerParser.balance()
-            |> ExLedger.LedgerParser.format_balance()
-            |> IO.write()
+          {:ok, transactions, accounts} ->
+            case maybe_validate_strict(transactions, accounts, strict?) do
+              :ok ->
+                transactions
+                |> ExLedger.LedgerParser.balance()
+                |> ExLedger.LedgerParser.format_balance()
+                |> IO.write()
+
+              {:error, {:undeclared_account, account_name}} ->
+                print_error("account '#{account_name}' is used but not declared (strict mode)")
+                System.halt(1)
+            end
 
           {:error, {reason, line}} ->
             print_error(
@@ -72,13 +80,37 @@ defmodule ExLedger.CLI do
     System.halt(64)
   end
 
+  defp maybe_validate_strict(_transactions, _accounts, false), do: :ok
+
+  defp maybe_validate_strict(transactions, accounts, true) do
+    # Get all account names used in transactions
+    used_accounts =
+      transactions
+      |> Enum.flat_map(fn transaction ->
+        Enum.map(transaction.postings, & &1.account)
+      end)
+      |> Enum.uniq()
+
+    # Get all declared account names
+    declared_accounts = Map.keys(accounts)
+
+    # Find any undeclared accounts
+    case Enum.find(used_accounts, fn account ->
+      account not in declared_accounts
+    end) do
+      nil -> :ok
+      undeclared -> {:error, {:undeclared_account, undeclared}}
+    end
+  end
+
   defp print_usage do
     [
       "Usage: exledger -f <ledger_file> balance",
       "",
       "Options:",
       "  -f, --file    Path to the ledger file",
-      "  -h, --help    Show this message"
+      "  -h, --help    Show this message",
+      "  --strict      Require all accounts to be declared"
     ]
     |> Enum.join("\n")
     |> IO.puts()

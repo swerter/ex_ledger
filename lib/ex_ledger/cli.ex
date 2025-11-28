@@ -39,7 +39,10 @@ defmodule ExLedger.CLI do
     |> File.read()
     |> case do
       {:ok, contents} ->
-        case ExLedger.LedgerParser.parse_ledger(contents) do
+        # Get the directory of the main file for resolving includes
+        base_dir = Path.dirname(file)
+
+        case ExLedger.LedgerParser.parse_ledger_with_includes(contents, base_dir) do
           {:ok, transactions} ->
             transactions
             |> ExLedger.LedgerParser.balance()
@@ -50,6 +53,7 @@ defmodule ExLedger.CLI do
             print_error(
               "failed to parse ledger file #{format_error_location(file, line)}: #{format_parse_error(reason)}"
             )
+            System.halt(1)
 
           {:error, reason} ->
             print_error("failed to parse ledger file #{format_error_location(file, nil)}: #{format_parse_error(reason)}")
@@ -88,6 +92,9 @@ defmodule ExLedger.CLI do
   defp format_error_location(file, line), do: "#{file}:#{line}"
 
   defp format_parse_error({:unexpected_input, rest}), do: "unexpected input #{inspect(rest)}"
+  defp format_parse_error({:include_not_found, filename}), do: "include file not found: #{filename}"
+  defp format_parse_error({:circular_include, filename}), do: "circular include detected: #{filename}"
+  defp format_parse_error({:file_read_error, filename, reason}), do: "cannot read include file #{filename}: #{:file.format_error(reason)}"
   defp format_parse_error(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_parse_error(reason), do: inspect(reason)
 end

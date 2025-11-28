@@ -483,6 +483,60 @@ defmodule ExLedger.LedgerParserTest do
     end
   end
 
+  describe "parse_account_declaration/1" do
+    test "parses account declaration with expense type" do
+      input = "account 6 Sonstiger Aufwand:6700 Übriger Betriebsaufwand  ;; type:expense"
+
+      assert {:ok, account} = LedgerParser.parse_account_declaration(input)
+      assert account.name == "6 Sonstiger Aufwand:6700 Übriger Betriebsaufwand"
+      assert account.type == :expense
+    end
+
+    test "parses account declaration with revenue type" do
+      input = "account Income:Salary  ; type:revenue"
+
+      assert {:ok, account} = LedgerParser.parse_account_declaration(input)
+      assert account.name == "Income:Salary"
+      assert account.type == :revenue
+    end
+
+    test "parses account declaration with asset type" do
+      input = "account Assets:Checking  ;; type:asset"
+
+      assert {:ok, account} = LedgerParser.parse_account_declaration(input)
+      assert account.name == "Assets:Checking"
+      assert account.type == :asset
+    end
+
+    test "parses account declaration with liability type" do
+      input = "account Liabilities:Credit Card  ; type:liability"
+
+      assert {:ok, account} = LedgerParser.parse_account_declaration(input)
+      assert account.name == "Liabilities:Credit Card"
+      assert account.type == :liability
+    end
+
+    test "parses account declaration with equity type" do
+      input = "account Equity:Opening Balances  ; type:equity"
+
+      assert {:ok, account} = LedgerParser.parse_account_declaration(input)
+      assert account.name == "Equity:Opening Balances"
+      assert account.type == :equity
+    end
+
+    test "returns error for invalid account type" do
+      input = "account Assets:Checking  ; type:invalid"
+
+      assert {:error, :invalid_account_declaration} = LedgerParser.parse_account_declaration(input)
+    end
+
+    test "returns error for missing type" do
+      input = "account Assets:Checking"
+
+      assert {:error, :invalid_account_declaration} = LedgerParser.parse_account_declaration(input)
+    end
+  end
+
   describe "parse_amount/1" do
     test "parses dollar amounts with cents" do
       assert {:ok, %{value: 4.50, currency: "$"}} = LedgerParser.parse_amount("$4.50")
@@ -553,6 +607,50 @@ defmodule ExLedger.LedgerParserTest do
   end
 
   describe "parse_ledger/1" do
+    test "parses multiple transactions and ignores comment lines" do
+      input = """
+      ; This is a comment at the start of the file
+      ; Another comment line
+
+      2009/10/29 (XFER) Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+
+      ; Comment between transactions
+      2009/10/30 (DEP) Pay day!
+          Assets:Checking            $20.00
+          Income
+
+      2009/10/30 (XFER) Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+
+      ; Yet another comment
+      2009/10/31 (559385768438A8D7) Panera Bread
+          Expenses:Food               $4.50
+          Liabilities:Credit Card
+      """
+
+      assert {:ok, transactions} = LedgerParser.parse_ledger(input)
+
+      assert length(transactions) == 4
+
+      assert Enum.at(transactions, 0).date == ~D[2009-10-29]
+      assert Enum.at(transactions, 1).date == ~D[2009-10-30]
+      assert Enum.at(transactions, 2).date == ~D[2009-10-30]
+      assert Enum.at(transactions, 3).date == ~D[2009-10-31]
+
+      # Verify all transactions are balanced
+      Enum.each(transactions, fn transaction ->
+        total =
+          transaction.postings
+          |> Enum.map(& &1.amount.value)
+          |> Enum.sum()
+
+        assert_in_delta total, 0.0, 0.01
+      end)
+    end
+
     test "parses multiple transactions" do
       input = """
       2009/10/29 (XFER) Panera Bread
@@ -881,6 +979,363 @@ defmodule ExLedger.LedgerParserTest do
       """
 
       assert String.trim(result) == String.trim(expected)
+    end
+  end
+
+  describe "parse_ledger/1 - include directive (no file resolution)" do
+    test "parses transactions without include directives" do
+      # parse_ledger/1 doesn't resolve includes, so include lines are ignored
+      input = """
+      2009/10/29 Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+      """
+
+      assert {:ok, transactions} = LedgerParser.parse_ledger(input)
+      assert length(transactions) == 1
+    end
+  end
+
+  describe "extract_account_declarations/1" do
+    test "extracts account declarations from ledger content" do
+      input = """
+      account Assets:Checking  ; type:asset
+      account Expenses:Food  ;; type:expense
+      account Income:Salary  ; type:revenue
+      account Liabilities:Credit Card  ; type:liability
+
+      2009/10/29 Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+      """
+
+      accounts = LedgerParser.extract_account_declarations(input)
+
+      assert accounts == %{
+               "Assets:Checking" => :asset,
+               "Expenses:Food" => :expense,
+               "Income:Salary" => :revenue,
+               "Liabilities:Credit Card" => :liability
+             }
+    end
+
+    test "extracts account declarations with comments in file" do
+      input = """
+      ; This is a comment
+      account Assets:Checking  ; type:asset
+      ; Another comment
+      account Expenses:Food  ;; type:expense
+      account Income:Salary  ; type:revenue
+
+      ; Comment before transaction
+      2009/10/29 Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+      """
+
+      accounts = LedgerParser.extract_account_declarations(input)
+
+      assert accounts == %{
+               "Assets:Checking" => :asset,
+               "Expenses:Food" => :expense,
+               "Income:Salary" => :revenue
+             }
+    end
+
+    test "ignores invalid account declarations" do
+      input = """
+      account Assets:Checking  ; type:asset
+      account Invalid Line
+      account Another:Account  ; type:invalid_type
+
+      2009/10/29 Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+      """
+
+      accounts = LedgerParser.extract_account_declarations(input)
+
+      assert accounts == %{
+               "Assets:Checking" => :asset
+             }
+    end
+
+    test "returns empty map when no account declarations" do
+      input = """
+      2009/10/29 Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+      """
+
+      accounts = LedgerParser.extract_account_declarations(input)
+
+      assert accounts == %{}
+    end
+  end
+
+  describe "parse_ledger_with_includes/2 - file resolution" do
+    setup do
+      # Create a temporary directory for test files
+      test_dir = System.tmp_dir!() |> Path.join("ex_ledger_test_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(test_dir)
+
+      on_exit(fn ->
+        File.rm_rf!(test_dir)
+      end)
+
+      {:ok, test_dir: test_dir}
+    end
+
+    test "reads and parses included file", %{test_dir: test_dir} do
+      # Create an included file
+      included_file = Path.join(test_dir, "opening_balances.ledger")
+      File.write!(included_file, """
+      2009/01/01 Opening Balance
+          Assets:Checking            $100.00
+          Equity:Opening Balances
+      """)
+
+      # Create main file that includes it
+      main_file = Path.join(test_dir, "main.ledger")
+      File.write!(main_file, """
+      include opening_balances.ledger
+
+      2009/10/29 Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+      """)
+
+      # Parse with includes
+      {:ok, content} = File.read(main_file)
+      assert {:ok, transactions, accounts} = LedgerParser.parse_ledger_with_includes(content, test_dir)
+
+      # Should have both transactions
+      assert length(transactions) == 2
+      assert Enum.at(transactions, 0).payee == "Opening Balance"
+      assert Enum.at(transactions, 1).payee == "Panera Bread"
+      # No account declarations in this test
+      assert accounts == %{}
+    end
+
+    test "handles nested includes", %{test_dir: test_dir} do
+      # Create a deeply included file
+      deep_file = Path.join(test_dir, "deep.ledger")
+      File.write!(deep_file, """
+      2009/01/01 Deep Transaction
+          Assets:Checking            $50.00
+          Equity:Opening Balances
+      """)
+
+      # Create an included file that includes another file
+      included_file = Path.join(test_dir, "opening_balances.ledger")
+      File.write!(included_file, """
+      include deep.ledger
+
+      2009/01/02 Middle Transaction
+          Assets:Checking            $100.00
+          Equity:Opening Balances
+      """)
+
+      # Create main file
+      main_file = Path.join(test_dir, "main.ledger")
+      File.write!(main_file, """
+      include opening_balances.ledger
+
+      2009/10/29 Top Transaction
+          Expenses:Food               $4.50
+          Assets:Checking
+      """)
+
+      {:ok, content} = File.read(main_file)
+      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger_with_includes(content, test_dir)
+
+      # Should have all three transactions
+      assert length(transactions) == 3
+      assert Enum.at(transactions, 0).payee == "Deep Transaction"
+      assert Enum.at(transactions, 1).payee == "Middle Transaction"
+      assert Enum.at(transactions, 2).payee == "Top Transaction"
+    end
+
+    test "returns error when included file does not exist", %{test_dir: test_dir} do
+      main_file = Path.join(test_dir, "main.ledger")
+      File.write!(main_file, """
+      include nonexistent.ledger
+
+      2009/10/29 Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+      """)
+
+      {:ok, content} = File.read(main_file)
+      assert {:error, {:include_not_found, "nonexistent.ledger"}} =
+               LedgerParser.parse_ledger_with_includes(content, test_dir)
+    end
+
+    test "handles relative paths in includes", %{test_dir: test_dir} do
+      # Create subdirectory
+      sub_dir = Path.join(test_dir, "ledgers")
+      File.mkdir_p!(sub_dir)
+
+      included_file = Path.join(sub_dir, "opening_balances.ledger")
+      File.write!(included_file, """
+      2009/01/01 Opening Balance
+          Assets:Checking            $100.00
+          Equity:Opening Balances
+      """)
+
+      main_file = Path.join(test_dir, "main.ledger")
+      File.write!(main_file, """
+      include ledgers/opening_balances.ledger
+
+      2009/10/29 Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+      """)
+
+      {:ok, content} = File.read(main_file)
+      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger_with_includes(content, test_dir)
+
+      assert length(transactions) == 2
+    end
+
+    test "prevents infinite loops with circular includes", %{test_dir: test_dir} do
+      # Create file A that includes B
+      file_a = Path.join(test_dir, "a.ledger")
+      File.write!(file_a, """
+      include b.ledger
+
+      2009/01/01 Transaction A
+          Assets:Checking            $100.00
+          Equity:Opening Balances
+      """)
+
+      # Create file B that includes A (circular reference)
+      file_b = Path.join(test_dir, "b.ledger")
+      File.write!(file_b, """
+      include a.ledger
+
+      2009/01/02 Transaction B
+          Assets:Checking            $50.00
+          Equity:Opening Balances
+      """)
+
+      {:ok, content} = File.read(file_a)
+      assert {:error, {:circular_include, _}} =
+               LedgerParser.parse_ledger_with_includes(content, test_dir)
+    end
+
+    test "strips comments from include lines", %{test_dir: test_dir} do
+      included_file = Path.join(test_dir, "opening_balances.ledger")
+      File.write!(included_file, """
+      2009/01/01 Opening Balance
+          Assets:Checking            $100.00
+          Equity:Opening Balances
+      """)
+
+      main_file = Path.join(test_dir, "main.ledger")
+      File.write!(main_file, """
+      include opening_balances.ledger  ; 2024 opening balances
+      """)
+
+      {:ok, content} = File.read(main_file)
+      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger_with_includes(content, test_dir)
+
+      assert length(transactions) == 1
+      assert Enum.at(transactions, 0).payee == "Opening Balance"
+    end
+
+    test "extracts account declarations from main file and included files", %{test_dir: test_dir} do
+      # Create an included file with account declarations
+      included_file = Path.join(test_dir, "accounts.ledger")
+      File.write!(included_file, """
+      account Assets:Checking  ; type:asset
+      account Expenses:Food  ; type:expense
+
+      2009/01/01 Opening Balance
+          Assets:Checking            $100.00
+          Equity:Opening Balances
+      """)
+
+      # Create main file with its own account declarations
+      main_file = Path.join(test_dir, "main.ledger")
+      File.write!(main_file, """
+      account Income:Salary  ; type:revenue
+      account Liabilities:Credit Card  ; type:liability
+
+      include accounts.ledger
+
+      2009/10/29 Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+      """)
+
+      {:ok, content} = File.read(main_file)
+      assert {:ok, transactions, accounts} = LedgerParser.parse_ledger_with_includes(content, test_dir)
+
+      # Should have both transactions
+      assert length(transactions) == 2
+
+      # Should have all account declarations from both files
+      assert accounts == %{
+               "Assets:Checking" => :asset,
+               "Expenses:Food" => :expense,
+               "Income:Salary" => :revenue,
+               "Liabilities:Credit Card" => :liability
+             }
+    end
+
+    test "handles comments and account declarations together", %{test_dir: test_dir} do
+      # Create a ledger file with comments and account declarations
+      ledger_file = Path.join(test_dir, "with_comments.ledger")
+      File.write!(ledger_file, """
+      ; This file demonstrates account declarations
+      ; with comments throughout
+
+      account Assets:Checking  ; type:asset
+      ; Comment between declarations
+      account Expenses:Food  ; type:expense
+
+      ; Now for some transactions
+      2009/10/29 Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+
+      ; Another transaction
+      2009/10/30 Salary
+          Assets:Checking            $2000.00
+          Income:Salary
+      """)
+
+      {:ok, content} = File.read(ledger_file)
+      assert {:ok, transactions, accounts} = LedgerParser.parse_ledger_with_includes(content, test_dir)
+
+      # Should have both transactions
+      assert length(transactions) == 2
+      assert Enum.at(transactions, 0).payee == "Panera Bread"
+      assert Enum.at(transactions, 1).payee == "Salary"
+
+      # Should have account declarations
+      assert accounts == %{
+               "Assets:Checking" => :asset,
+               "Expenses:Food" => :expense
+             }
+    end
+
+    test "handles include files with errors", %{test_dir: test_dir} do
+      included_file = Path.join(test_dir, "bad.ledger")
+      File.write!(included_file, """
+      2009/01/01
+          Assets:Checking            $100.00
+      """)
+
+      main_file = Path.join(test_dir, "main.ledger")
+      File.write!(main_file, """
+      include bad.ledger
+      """)
+
+      {:ok, content} = File.read(main_file)
+      # Should return an error about the parse failure in the included file
+      assert {:error, _} = LedgerParser.parse_ledger_with_includes(content, test_dir)
     end
   end
 end

@@ -33,6 +33,10 @@ defmodule ExLedger.LedgerParser do
           comment: String.t() | nil,
           postings: [posting()]
         }
+  @type account_declaration :: %{
+          name: String.t(),
+          type: :expense | :revenue | :asset | :liability | :equity
+        }
   @type parse_error ::
           :missing_date
           | :missing_payee
@@ -42,11 +46,40 @@ defmodule ExLedger.LedgerParser do
           | :parse_error
           | :unbalanced
           | :multiple_nil_amounts
+          | :invalid_account_type
           | {:unexpected_input, String.t()}
 
   # Basic building blocks
   whitespace = ascii_string([?\s, ?\t], min: 1)
   optional_whitespace = ascii_string([?\s, ?\t], min: 0)
+
+  # Account type keywords
+  account_type =
+    choice([
+      string("expense") |> replace(:expense),
+      string("revenue") |> replace(:revenue),
+      string("asset") |> replace(:asset),
+      string("liability") |> replace(:liability),
+      string("equity") |> replace(:equity)
+    ])
+    |> unwrap_and_tag(:account_type)
+
+  # Account declaration: account NAME  ;; type:TYPE
+  account_declaration =
+    ignore(string("account"))
+    |> ignore(whitespace)
+    |> utf8_string([not: ?;, not: ?\n], min: 1)
+    |> reduce({:trim_string, []})
+    |> unwrap_and_tag(:account_name)
+    |> ignore(optional_whitespace)
+    |> ignore(string(";"))
+    |> ignore(optional(string(";")))
+    |> ignore(optional_whitespace)
+    |> ignore(string("type:"))
+    |> concat(account_type)
+    |> reduce({:build_account_declaration, []})
+
+  defparsec(:account_declaration_parser, account_declaration)
 
   # Date: YYYY/MM/DD
   year = integer(4)
@@ -62,7 +95,7 @@ defmodule ExLedger.LedgerParser do
     |> reduce({:to_date, []})
     |> unwrap_and_tag(:date)
 
-  defparsec :date_parser, date
+  defparsec(:date_parser, date)
 
   # Transaction code: (CODE)
   code =
@@ -124,15 +157,13 @@ defmodule ExLedger.LedgerParser do
     )
     |> reduce({:to_amount, []})
 
-  defparsec :amount_parser, amount_value
+  defparsec(:amount_parser, amount_value)
 
   # Account name - everything before at least 2 spaces and amount (or end of line)
   # Account names can contain single spaces but not multiple consecutive spaces
   account_name =
     utf8_string([not: ?\n, not: ?\s], min: 1)
-    |> repeat(
-      ascii_char([?\s]) |> utf8_string([not: ?\n, not: ?\s], min: 1)
-    )
+    |> repeat(ascii_char([?\s]) |> utf8_string([not: ?\n, not: ?\s], min: 1))
     |> reduce({:join_account_parts, []})
     |> unwrap_and_tag(:account)
 
@@ -193,10 +224,12 @@ defmodule ExLedger.LedgerParser do
     |> reduce({:attach_notes_to_posting, []})
 
   # Complete transaction
-  defparsec :transaction_parser,
+  defparsec(
+    :transaction_parser,
     transaction_header
     |> times(posting, min: 2)
     |> reduce({:build_transaction, []})
+  )
 
   # Note parser for individual notes
   note_tag =
@@ -228,8 +261,10 @@ defmodule ExLedger.LedgerParser do
     |> utf8_string([not: ?\n], min: 0)
     |> reduce({:to_comment, []})
 
-  defparsec :note_parser,
+  defparsec(
+    :note_parser,
     choice([note_tag, note_metadata, note_comment_only])
+  )
 
   # Posting parser
   posting_line =
@@ -241,7 +276,7 @@ defmodule ExLedger.LedgerParser do
     )
     |> reduce({:to_posting_simple, []})
 
-  defparsec :posting_parser, posting_line
+  defparsec(:posting_parser, posting_line)
 
   # Helper functions for reducers
   @spec to_date([integer()]) :: Date.t() | {:error, :invalid_date}
@@ -274,7 +309,8 @@ defmodule ExLedger.LedgerParser do
   defp join_account_parts(parts) do
     parts
     |> Enum.map_join("", fn
-      part when is_integer(part) -> <<part::utf8>>  # Convert space char codes to strings
+      # Convert space char codes to strings
+      part when is_integer(part) -> <<part::utf8>>
       part -> to_string(part)
     end)
     |> String.trim()
@@ -287,6 +323,13 @@ defmodule ExLedger.LedgerParser do
 
   defp join_metadata_key([first_char]) when is_integer(first_char) do
     <<first_char::utf8>>
+  end
+
+  @spec build_account_declaration(keyword()) :: account_declaration()
+  defp build_account_declaration(parts) do
+    name = Keyword.get(parts, :account_name)
+    type = Keyword.get(parts, :account_type)
+    %{name: name, type: type}
   end
 
   @spec to_posting(keyword()) :: posting()
@@ -310,7 +353,8 @@ defmodule ExLedger.LedgerParser do
     {:metadata_kv, String.trim(key), String.trim(value)}
   end
 
-  @spec to_metadata_tuple([String.t()]) :: {:comment, String.t()} | {:metadata, String.t(), String.t()}
+  @spec to_metadata_tuple([String.t()]) ::
+          {:comment, String.t()} | {:metadata, String.t(), String.t()}
   defp to_metadata_tuple([key, value]) do
     trimmed_value = String.trim(value)
 
@@ -336,10 +380,11 @@ defmodule ExLedger.LedgerParser do
 
   @spec attach_notes_to_posting(list()) :: posting()
   defp attach_notes_to_posting(items) do
-    {notes, [posting]} = Enum.split_while(items, fn
-      %{account: _} -> false
-      _ -> true
-    end)
+    {notes, [posting]} =
+      Enum.split_while(items, fn
+        %{account: _} -> false
+        _ -> true
+      end)
 
     {metadata, tags, comments} =
       Enum.reduce(notes, {%{}, [], []}, fn
@@ -476,6 +521,7 @@ defmodule ExLedger.LedgerParser do
   @spec parse_ledger(String.t()) ::
           {:ok, [transaction()]} | {:error, {parse_error(), non_neg_integer()}}
   def parse_ledger(""), do: {:ok, []}
+
   def parse_ledger(input) do
     input
     |> split_transactions_with_line_numbers()
@@ -491,21 +537,273 @@ defmodule ExLedger.LedgerParser do
     end
   end
 
+  @doc """
+  Extracts account declarations from a ledger file.
+
+  Returns a map where keys are account names and values are account types.
+
+  ## Examples
+
+      iex> content = "account Assets:Checking  ; type:asset\\n\\n2009/10/29 Panera\\n    Expenses:Food  $4.50\\n    Assets:Checking\\n"
+      iex> ExLedger.LedgerParser.extract_account_declarations(content)
+      %{"Assets:Checking" => :asset}
+
+  """
+  @spec extract_account_declarations(String.t()) :: %{String.t() => atom()}
+  def extract_account_declarations(input) when is_binary(input) do
+    input
+    |> String.split("\n")
+    |> Enum.filter(&String.starts_with?(String.trim(&1), "account "))
+    |> Enum.reduce(%{}, fn line, acc ->
+      case parse_account_declaration(line) do
+        {:ok, %{name: name, type: type}} -> Map.put(acc, name, type)
+        {:error, _} -> acc
+      end
+    end)
+  end
+
+  @doc """
+  Parses a ledger file with support for include directives and account declarations.
+
+  The `base_dir` parameter specifies the directory to resolve relative include paths from.
+  This is typically the directory containing the main ledger file.
+
+  Include directives have the format:
+      include path/to/file.ledger
+
+  Account declarations have the format:
+      account NAME  ; type:TYPE
+
+  Supports:
+  - Relative paths (e.g., "opening_balances.ledger", "ledgers/2024.ledger")
+  - Comments after the filename (e.g., "include file.ledger ; comment")
+  - Nested includes (files can include other files)
+  - Circular include detection
+  - Account declarations (e.g., "account Assets:Checking  ; type:asset")
+
+  Returns `{:ok, transactions, accounts}` with all transactions from the main file and all included files,
+  and a map of account declarations, or `{:error, reason}` if parsing fails.
+
+  ## Examples
+
+      iex> content = "include opening.ledger\\n\\n2009/10/29 Panera\\n    Expenses:Food  $4.50\\n    Assets:Checking\\n"
+      iex> LedgerParser.parse_ledger_with_includes(content, "/path/to/ledger/dir")
+      {:ok, [%{date: ~D[2009-01-01], ...}, %{date: ~D[2009-10-29], ...}], %{}}
+
+  """
+  @spec parse_ledger_with_includes(String.t(), String.t(), MapSet.t(String.t())) ::
+          {:ok, [transaction()], %{String.t() => atom()}}
+          | {:error, {:include_not_found, String.t()}}
+          | {:error, {:circular_include, String.t()}}
+          | {:error, {parse_error(), non_neg_integer()}}
+  def parse_ledger_with_includes(input, base_dir, seen_files \\ MapSet.new())
+
+  def parse_ledger_with_includes("", _base_dir, _seen_files), do: {:ok, [], %{}}
+
+  def parse_ledger_with_includes(input, base_dir, seen_files) do
+    # First extract account declarations
+    accounts = extract_account_declarations(input)
+
+    input
+    |> String.split("\n")
+    |> process_lines_with_includes(base_dir, seen_files, [], accounts)
+    |> case do
+      {:ok, all_content, all_accounts} ->
+        # Parse the combined content as a ledger
+        combined = Enum.join(all_content, "\n")
+
+        case parse_ledger(combined) do
+          {:ok, transactions} -> {:ok, transactions, all_accounts}
+          error -> error
+        end
+
+      error ->
+        error
+    end
+  end
+
+  @spec process_lines_with_includes(
+          [String.t()],
+          String.t(),
+          MapSet.t(String.t()),
+          [String.t()],
+          %{String.t() => atom()}
+        ) ::
+          {:ok, [String.t()], %{String.t() => atom()}}
+          | {:error, {:include_not_found, String.t()}}
+          | {:error, {:circular_include, String.t()}}
+  defp process_lines_with_includes([], _base_dir, _seen_files, acc, accounts) do
+    {:ok, Enum.reverse(acc), accounts}
+  end
+
+  defp process_lines_with_includes([line | rest], base_dir, seen_files, acc, accounts) do
+    trimmed = String.trim(line)
+
+    cond do
+      # Check if this is an account declaration - skip it, already processed
+      String.starts_with?(trimmed, "account ") ->
+        process_lines_with_includes(rest, base_dir, seen_files, acc, accounts)
+
+      # Check if this is an include directive
+      String.starts_with?(trimmed, "include ") ->
+        # Extract filename, removing any trailing comments
+        filename =
+          trimmed
+          |> String.replace_prefix("include ", "")
+          |> String.split(";")
+          |> List.first()
+          |> String.trim()
+
+        # Resolve the full path
+        include_path = Path.join(base_dir, filename)
+        absolute_path = Path.expand(include_path)
+
+        cond do
+          # Check for circular includes
+          MapSet.member?(seen_files, absolute_path) ->
+            {:error, {:circular_include, filename}}
+
+          # Check if file exists
+          not File.exists?(absolute_path) ->
+            {:error, {:include_not_found, filename}}
+
+          true ->
+            # Read and process the included file
+            case File.read(absolute_path) do
+              {:ok, included_content} ->
+                # Get the directory of the included file for nested includes
+                included_dir = Path.dirname(absolute_path)
+                updated_seen = MapSet.put(seen_files, absolute_path)
+
+                # Recursively process the included file
+                case parse_ledger_with_includes(included_content, included_dir, updated_seen) do
+                  {:ok, included_transactions, included_accounts} ->
+                    # Merge account declarations
+                    merged_accounts = Map.merge(accounts, included_accounts)
+
+                    # Convert transactions back to ledger format and add to accumulator
+                    included_lines =
+                      included_transactions
+                      |> Enum.map(&transaction_to_lines/1)
+                      |> Enum.intersperse("")
+
+                    # Reverse included_lines so they appear in correct order after final reverse
+                    process_lines_with_includes(
+                      rest,
+                      base_dir,
+                      seen_files,
+                      Enum.reverse(included_lines) ++ acc,
+                      merged_accounts
+                    )
+
+                  error ->
+                    error
+                end
+
+              {:error, reason} ->
+                {:error, {:file_read_error, filename, reason}}
+            end
+        end
+
+      # Not an include directive or account declaration, just accumulate the line
+      true ->
+        process_lines_with_includes(rest, base_dir, seen_files, [line | acc], accounts)
+    end
+  end
+
+  @spec transaction_to_lines(transaction()) :: String.t()
+  defp transaction_to_lines(transaction) do
+    # Format the header line
+    code_part = if transaction.code != "", do: "(#{transaction.code}) ", else: ""
+    comment_part = if transaction.comment, do: "  ; #{transaction.comment}", else: ""
+
+    header =
+      "#{format_transaction_date(transaction.date)} #{code_part}#{transaction.payee}#{comment_part}"
+
+    # Format the postings
+    posting_lines =
+      Enum.map(transaction.postings, fn posting ->
+        # Format metadata, tags, and comments
+        notes =
+          []
+          |> add_metadata_lines(posting.metadata)
+          |> add_tag_lines(posting.tags)
+          |> add_comment_lines(posting.comments)
+
+        # Format the account and amount
+        amount_str =
+          if posting.amount do
+            currency = posting.amount.currency
+            value = posting.amount.value
+            sign = if value < 0, do: "-", else: ""
+            abs_value = abs(value)
+            formatted = :erlang.float_to_binary(abs_value, decimals: 2)
+            "  #{currency}#{sign}#{formatted}"
+          else
+            ""
+          end
+
+        account_line = "    #{posting.account}#{String.pad_leading(amount_str, 20)}"
+
+        Enum.join(notes ++ [account_line], "\n")
+      end)
+
+    Enum.join([header | posting_lines], "\n")
+  end
+
+  defp add_metadata_lines(lines, metadata) when map_size(metadata) == 0, do: lines
+
+  defp add_metadata_lines(lines, metadata) do
+    metadata_lines =
+      metadata
+      |> Enum.map(fn {key, value} -> "    ; #{key}: #{value}" end)
+
+    lines ++ metadata_lines
+  end
+
+  defp add_tag_lines(lines, []), do: lines
+
+  defp add_tag_lines(lines, tags) do
+    tag_lines = Enum.map(tags, fn tag -> "    ; :#{tag}:" end)
+    lines ++ tag_lines
+  end
+
+  defp add_comment_lines(lines, []), do: lines
+
+  defp add_comment_lines(lines, comments) do
+    comment_lines = Enum.map(comments, fn comment -> "    ; #{comment}" end)
+    lines ++ comment_lines
+  end
+
+  defp format_transaction_date(date) do
+    "#{date.year}/#{String.pad_leading(to_string(date.month), 2, "0")}/#{String.pad_leading(to_string(date.day), 2, "0")}"
+  end
+
   defp split_transactions_with_line_numbers(input) do
     input
     |> String.split("\n")
     |> Enum.with_index(1)
     |> Enum.reduce({[], [], nil}, fn {line, index}, {chunks, current_lines, start_line} ->
-      if String.trim(line) == "" do
-        if current_lines == [] do
-          {chunks, [], nil}
-        else
-          chunk = Enum.reverse(current_lines) |> Enum.join("\n")
-          {[{chunk, start_line || index} | chunks], [], nil}
-        end
-      else
-        start_line = start_line || index
-        {chunks, [line | current_lines], start_line}
+      trimmed = String.trim(line)
+
+      cond do
+        # Empty line - end current transaction chunk if any
+        trimmed == "" ->
+          if current_lines == [] do
+            {chunks, [], nil}
+          else
+            chunk = Enum.reverse(current_lines) |> Enum.join("\n")
+            {[{chunk, start_line || index} | chunks], [], nil}
+          end
+
+        # Comment line (starts with ;) - skip it
+        String.starts_with?(trimmed, ";") ->
+          {chunks, current_lines, start_line}
+
+        # Regular line - add to current chunk
+        true ->
+          start_line = start_line || index
+          {chunks, [line | current_lines], start_line}
       end
     end)
     |> finalize_transaction_chunks()
@@ -522,11 +820,41 @@ defmodule ExLedger.LedgerParser do
   end
 
   @doc """
+  Parses an account declaration.
+
+  ## Examples
+
+      iex> ExLedger.LedgerParser.parse_account_declaration("account 6 Sonstiger Aufwand:6700 Übriger Betriebsaufwand  ;; type:expense")
+      {:ok, %{name: "6 Sonstiger Aufwand:6700 Übriger Betriebsaufwand", type: :expense}}
+
+  """
+  @spec parse_account_declaration(String.t()) ::
+          {:ok, account_declaration()}
+          | {:error, :invalid_account_declaration | :invalid_account_type}
+  def parse_account_declaration(input) when is_binary(input) do
+    case account_declaration_parser(input) do
+      {:ok, [result], "", _, _, _} ->
+        {:ok, result}
+
+      {:ok, _, _rest, _, _, _} ->
+        {:error, :invalid_account_declaration}
+
+      {:error, _reason, _rest, _context, _line, _column} ->
+        {:error, :invalid_account_declaration}
+    end
+  end
+
+  @doc """
   Parses a date string in YYYY/MM/DD format using NimbleParsec.
   """
   @spec parse_date(String.t()) :: {:ok, Date.t()} | {:error, :invalid_date_format}
   def parse_date(date_string) when is_binary(date_string) do
-    run_parser(&date_parser/1, date_string, fn {:date, date} -> {:ok, date} end, :invalid_date_format)
+    run_parser(
+      &date_parser/1,
+      date_string,
+      fn {:date, date} -> {:ok, date} end,
+      :invalid_date_format
+    )
   end
 
   @doc """

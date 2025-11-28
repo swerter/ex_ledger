@@ -1,0 +1,21 @@
+; Account declarations
+account Assets:Checking  ; type:asset
+account Assets:Savings  ; type:asset
+account Expenses:Food  ; type:expense
+account Expenses:Transportation  ; type:expense
+account Income:Salary  ; type:revenue
+account Liabilities:Credit Card  ; type:liability
+account Equity:Opening Balances  ; type:equity
+
+; Sample transactions
+2009/01/01 Opening Balance
+    Assets:Checking            $1000.00
+    Equity:Opening Balances
+
+2009/10/29 Panera Bread
+    Expenses:Food               $4.50
+    Assets:Checking
+
+2009/10/30 Salary
+    Assets:Checking            $2000.00
+    Income:Salary

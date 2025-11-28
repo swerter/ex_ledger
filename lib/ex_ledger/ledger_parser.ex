@@ -284,11 +284,11 @@ defmodule ExLedger.LedgerParser do
     %{account: account, amount: amount, metadata: %{}, tags: [], comments: []}
   end
 
-  @spec to_posting_simple(keyword()) :: {:ok, map()}
+  @spec to_posting_simple(keyword()) :: map()
   defp to_posting_simple(parts) do
     account = Keyword.get(parts, :account)
     amount = Keyword.get(parts, :amount)
-    {:ok, %{account: account, amount: amount}}
+    %{account: account, amount: amount}
   end
 
   @spec to_metadata([String.t()]) :: {:metadata_kv, String.t(), String.t()}
@@ -630,5 +630,75 @@ defmodule ExLedger.LedgerParser do
       end)
 
     result <> "\n"
+  end
+
+  @doc """
+  Calculates the balance for each account by summing all postings.
+
+  Returns a map where keys are account names and values are the total balance amounts.
+
+  ## Examples
+
+      iex> transactions = [
+      ...>   %{postings: [
+      ...>     %{account: "Assets:Checking", amount: %{value: -4.50}},
+      ...>     %{account: "Expenses:Coffee", amount: %{value: 4.50}}
+      ...>   ]},
+      ...>   %{postings: [
+      ...>     %{account: "Assets:Checking", amount: %{value: -20.00}},
+      ...>     %{account: "Expenses:Coffee", amount: %{value: 20.00}}
+      ...>   ]}
+      ...> ]
+      iex> ExLedger.LedgerParser.balance(transactions)
+      %{"Assets:Checking" => -24.50, "Expenses:Coffee" => 24.50}
+  """
+  @spec balance([transaction()]) :: %{String.t() => float()}
+  def balance(transactions) do
+    transactions
+    |> Enum.flat_map(fn transaction -> transaction.postings end)
+    |> Enum.group_by(fn posting -> posting.account end)
+    |> Enum.map(fn {account, postings} ->
+      total = postings |> Enum.map(& &1.amount.value) |> Enum.sum()
+      {account, total}
+    end)
+    |> Map.new()
+  end
+
+  @doc """
+  Formats account balances as a balance report.
+
+  Returns a string with each account and its balance, followed by a separator line
+  and the total (which should be 0 for balanced transactions).
+
+  ## Examples
+
+      iex> balances = %{"Assets:Checking" => -23.00, "Expenses:Pacific Bell" => 23.00}
+      iex> ExLedger.LedgerParser.format_balance(balances)
+      \"             $-23.00  Assets:Checking\\n              $23.00  Expenses:Pacific Bell\\n--------------------\\n                   0\\n\"
+  """
+  @spec format_balance(%{String.t() => float()}) :: String.t()
+  def format_balance(balances) do
+    total = balances |> Map.values() |> Enum.sum()
+
+    sorted_accounts = balances |> Map.keys() |> Enum.sort()
+
+    result =
+      sorted_accounts
+      |> Enum.map_join("\n", fn account ->
+        amount = Map.get(balances, account)
+        amount_str = ExLedger.format_amount(amount)
+        "#{String.pad_leading(amount_str, 20)}  #{account}"
+      end)
+
+    result <> "\n" <> String.duplicate("-", 20) <> "\n" <> format_total(total) <> "\n"
+  end
+
+  @spec format_total(float()) :: String.t()
+  defp format_total(total) do
+    if abs(total) < 0.01 do
+      String.pad_leading("0", 20)
+    else
+      String.pad_leading(ExLedger.format_amount(total), 20)
+    end
   end
 end

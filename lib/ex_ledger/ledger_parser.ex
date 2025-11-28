@@ -327,57 +327,42 @@ defmodule ExLedger.LedgerParser do
       _ -> true
     end)
 
-    metadata =
-      notes
-      |> Enum.filter(&match?({:metadata_kv, _, _}, &1))
-      |> Enum.map(fn {:metadata_kv, k, v} -> {k, v} end)
-      |> Map.new()
+    {metadata, tags, comments} =
+      Enum.reduce(notes, {%{}, [], []}, fn
+        {:metadata_kv, key, value}, {meta, tags, comments} ->
+          {Map.put(meta, key, value), tags, comments}
 
-    tags =
-      notes
-      |> Enum.filter(&match?({:tag, _}, &1))
-      |> Enum.map(fn {:tag, t} -> t end)
+        {:tag, tag}, {meta, tags, comments} ->
+          {meta, [tag | tags], comments}
 
-    comments =
-      notes
-      |> Enum.filter(&match?({:note_comment, _}, &1))
-      |> Enum.map(fn {:note_comment, c} -> c end)
+        {:note_comment, comment}, {meta, tags, comments} ->
+          {meta, tags, [comment | comments]}
+
+        _, acc ->
+          acc
+      end)
+
+    tags = Enum.reverse(tags)
+    comments = Enum.reverse(comments)
 
     %{posting | metadata: metadata, tags: tags, comments: comments}
   end
 
   @spec build_transaction(list()) :: transaction()
   defp build_transaction(parts) do
-    # Extract tagged tuples and maps from the parts list
-    date = parts |> Enum.find_value(fn
-      {:date, d} -> d
-      _ -> nil
-    end)
-
-    code = parts |> Enum.find_value(fn
-      {:code, c} -> c
-      _ -> nil
-    end)
-
-    payee = parts |> Enum.find_value(fn
-      {:payee, p} -> p
-      _ -> nil
-    end)
-
-    comment = parts |> Enum.find_value(fn
-      {:comment, c} -> c
-      _ -> nil
-    end)
-
-    postings = parts |> Enum.filter(&is_map/1)
-
-    %{
-      date: date,
-      code: code,
-      payee: payee,
-      comment: comment,
-      postings: postings
-    }
+    parts
+    |> Enum.reduce(
+      %{date: nil, code: nil, payee: nil, comment: nil, postings: []},
+      fn
+        {:date, date}, acc -> %{acc | date: date}
+        {:code, code}, acc -> %{acc | code: code}
+        {:payee, payee}, acc -> %{acc | payee: payee}
+        {:comment, comment}, acc -> %{acc | comment: comment}
+        posting, acc when is_map(posting) -> Map.update!(acc, :postings, &[posting | &1])
+        _, acc -> acc
+      end
+    )
+    |> Map.update!(:postings, &Enum.reverse/1)
   end
 
   # Public API
@@ -495,16 +480,7 @@ defmodule ExLedger.LedgerParser do
   """
   @spec parse_date(String.t()) :: {:ok, Date.t()} | {:error, :invalid_date_format}
   def parse_date(date_string) when is_binary(date_string) do
-    case date_parser(date_string) do
-      {:ok, [date: date], "", _, _, _} ->
-        {:ok, date}
-
-      {:ok, _, _rest, _, _, _} ->
-        {:error, :invalid_date_format}
-
-      {:error, _reason, _rest, _context, _line, _column} ->
-        {:error, :invalid_date_format}
-    end
+    run_parser(&date_parser/1, date_string, fn {:date, date} -> {:ok, date} end, :invalid_date_format)
   end
 
   @doc """
@@ -512,16 +488,7 @@ defmodule ExLedger.LedgerParser do
   """
   @spec parse_posting(String.t()) :: {:ok, map()} | {:error, :invalid_posting}
   def parse_posting(line) do
-    case posting_parser(line) do
-      {:ok, [result], "", _, _, _} ->
-        result
-
-      {:ok, _, _rest, _, _, _} ->
-        {:error, :invalid_posting}
-
-      {:error, _reason, _rest, _context, _line, _column} ->
-        {:error, :invalid_posting}
-    end
+    run_parser(&posting_parser/1, line, fn posting -> {:ok, posting} end, :invalid_posting)
   end
 
   @doc """
@@ -529,16 +496,7 @@ defmodule ExLedger.LedgerParser do
   """
   @spec parse_amount(String.t()) :: {:ok, amount()} | {:error, :invalid_amount}
   def parse_amount(amount_string) when is_binary(amount_string) do
-    case amount_parser(amount_string) do
-      {:ok, [amount], "", _, _, _} ->
-        {:ok, amount}
-
-      {:ok, _, _rest, _, _, _} ->
-        {:error, :invalid_amount}
-
-      {:error, _reason, _rest, _context, _line, _column} ->
-        {:error, :invalid_amount}
-    end
+    run_parser(&amount_parser/1, amount_string, &{:ok, &1}, :invalid_amount)
   end
 
   @doc """
@@ -548,15 +506,14 @@ defmodule ExLedger.LedgerParser do
           {:ok, {:tag, String.t()} | {:metadata, String.t(), String.t()} | {:comment, String.t()}}
           | {:error, :invalid_note}
   def parse_note(note_string) when is_binary(note_string) do
-    case note_parser(note_string) do
-      {:ok, [result], "", _, _, _} ->
-        {:ok, result}
+    run_parser(&note_parser/1, note_string, &{:ok, &1}, :invalid_note)
+  end
 
-      {:ok, _, _rest, _, _, _} ->
-        {:error, :invalid_note}
-
-      {:error, _reason, _rest, _context, _line, _column} ->
-        {:error, :invalid_note}
+  defp run_parser(parser_fun, input, success_fun, error) do
+    case parser_fun.(input) do
+      {:ok, [result], "", _, _, _} -> success_fun.(result)
+      {:ok, _, _rest, _, _, _} -> {:error, error}
+      {:error, _reason, _rest, _context, _line, _column} -> {:error, error}
     end
   end
 

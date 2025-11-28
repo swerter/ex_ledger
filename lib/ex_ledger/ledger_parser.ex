@@ -51,6 +51,8 @@ defmodule ExLedger.LedgerParser do
           | :invalid_account_type
           | {:unexpected_input, String.t()}
 
+  @amount_regex ~r/[-+]?(?:\$|[A-Z]{1,5})?\d+(?:\.\d{1,2})?/
+
   # Basic building blocks
   whitespace = ascii_string([?\s, ?\t], min: 1)
   optional_whitespace = ascii_string([?\s, ?\t], min: 0)
@@ -510,11 +512,27 @@ defmodule ExLedger.LedgerParser do
   defp has_insufficient_spacing?(lines) do
     lines
     |> Enum.drop(1)
-    |> Enum.filter(fn line -> Regex.match?(~r/^\s+[^\s;].*\$/, line) end)
-    |> Enum.any?(fn line ->
-      # Amount exists but doesn't have 2+ spaces before it
-      Regex.match?(~r/\S\s\$/, line)
-    end)
+    |> Enum.filter(&posting_line?/1)
+    |> Enum.any?(&line_missing_double_space?/1)
+  end
+
+  defp posting_line?(line) do
+    Regex.match?(~r/^\s+[^\s;]/, line)
+  end
+
+  defp line_missing_double_space?(line) do
+    trimmed = line |> String.split(";", parts: 2) |> List.first()
+
+    case Regex.scan(@amount_regex, trimmed, return: :index) do
+      [] ->
+        false
+
+      matches ->
+        [{start, _len}] = List.last(matches)
+        prefix = String.slice(trimmed, 0, start)
+
+        Regex.match?(~r/\s$/, prefix) and not Regex.match?(~r/\s{2,}$/, prefix)
+    end
   end
 
   @doc """
@@ -580,7 +598,14 @@ defmodule ExLedger.LedgerParser do
         case parse_standalone_alias(trimmed) do
           {:ok, alias_name, account_name} ->
             # Create a pseudo-account entry for the alias
-            alias_entry = %{name: alias_name, type: :alias, aliases: [], assertions: [], target: account_name}
+            alias_entry = %{
+              name: alias_name,
+              type: :alias,
+              aliases: [],
+              assertions: [],
+              target: account_name
+            }
+
             parse_account_blocks(rest, [alias_entry | acc])
 
           {:error, _} ->
@@ -610,7 +635,8 @@ defmodule ExLedger.LedgerParser do
     end
   end
 
-  @spec parse_standalone_alias(String.t()) :: {:ok, String.t(), String.t()} | {:error, :invalid_alias}
+  @spec parse_standalone_alias(String.t()) ::
+          {:ok, String.t(), String.t()} | {:error, :invalid_alias}
   defp parse_standalone_alias(line) do
     # Parse: alias SHORT = FULL:ACCOUNT:NAME
     case String.split(line, "=", parts: 2) do
@@ -735,11 +761,18 @@ defmodule ExLedger.LedgerParser do
 
   def parse_ledger_with_includes("", _base_dir, _seen_files, _source_file), do: {:ok, [], %{}}
 
-  def parse_ledger_with_includes(input, base_dir, seen_files, source_file) when is_binary(source_file) or is_nil(source_file) do
+  def parse_ledger_with_includes(input, base_dir, seen_files, source_file)
+      when is_binary(source_file) or is_nil(source_file) do
     parse_ledger_with_includes_with_import(input, base_dir, seen_files, source_file, nil)
   end
 
-  defp parse_ledger_with_includes_with_import(input, base_dir, seen_files, source_file, import_chain) do
+  defp parse_ledger_with_includes_with_import(
+         input,
+         base_dir,
+         seen_files,
+         source_file,
+         import_chain
+       ) do
     # First extract account declarations
     accounts = extract_account_declarations(input)
 
@@ -762,113 +795,146 @@ defmodule ExLedger.LedgerParser do
           {:ok, [transaction()], %{String.t() => atom()}}
           | {:error, {:include_not_found, String.t()}}
           | {:error, {:circular_include, String.t()}}
-          | {:error, {parse_error(), non_neg_integer(), String.t() | nil, [{String.t(), non_neg_integer()}] | nil}}
-  defp process_lines_and_includes([], _base_dir, _seen_files, acc_transactions, accounts, _source_file, _import_chain) do
+          | {:error,
+             {parse_error(), non_neg_integer(), String.t() | nil,
+              [{String.t(), non_neg_integer()}] | nil}}
+  defp process_lines_and_includes(
+         [],
+         _base_dir,
+         _seen_files,
+         acc_transactions,
+         accounts,
+         _source_file,
+         _import_chain
+       ) do
     {:ok, acc_transactions, accounts}
   end
 
-  defp process_lines_and_includes(lines, base_dir, seen_files, acc_transactions, accounts, source_file, import_chain) do
-    # Find the next include directive or end of non-include content
+  defp process_lines_and_includes(
+         lines,
+         base_dir,
+         seen_files,
+         acc_transactions,
+         accounts,
+         source_file,
+         import_chain
+       ) do
     {before_include, include_and_after} = split_at_include(lines)
 
-    # Parse transactions in the before_include section (if any non-empty content)
-    if before_include != [] do
-      content = Enum.map_join(before_include, "\n", fn {line, _} -> line end)
+    if before_include == [] do
+      process_include_lines(
+        include_and_after,
+        base_dir,
+        seen_files,
+        acc_transactions,
+        accounts,
+        source_file,
+        import_chain
+      )
+    else
+      process_content_chunk(
+        before_include,
+        include_and_after,
+        base_dir,
+        seen_files,
+        acc_transactions,
+        accounts,
+        source_file,
+        import_chain
+      )
+    end
+  end
 
-      # Skip parsing if content is empty or only whitespace/comments
-      if String.trim(content) == "" or only_comments_and_whitespace?(content) do
-        # No real content, just process includes
-        process_lines_and_includes(
-          include_and_after,
-          base_dir,
-          seen_files,
-          acc_transactions,
-          accounts,
-          source_file,
-          import_chain
-        )
-      else
-        case parse_ledger(content, source_file) do
+  defp process_content_chunk(
+         before_include,
+         include_and_after,
+         base_dir,
+         seen_files,
+         acc_transactions,
+         accounts,
+         source_file,
+         import_chain
+       ) do
+    content = Enum.map_join(before_include, "\n", fn {line, _} -> line end)
+
+    if String.trim(content) == "" or only_comments_and_whitespace?(content) do
+      process_lines_and_includes(
+        include_and_after,
+        base_dir,
+        seen_files,
+        acc_transactions,
+        accounts,
+        source_file,
+        import_chain
+      )
+    else
+      case parse_ledger(content, source_file) do
         {:ok, transactions} ->
-          # Continue with remaining lines (include and after)
-          case include_and_after do
-            [] ->
-              # No more includes, we're done
-              {:ok, acc_transactions ++ transactions, accounts}
-
-            [{include_line, line_num} | rest] ->
-              # Process the include directive
-              trimmed = String.trim(include_line)
-
-              if String.starts_with?(trimmed, "include ") do
-                process_include_directive(
-                  trimmed,
-                  line_num,
-                  rest,
-                  base_dir,
-                  seen_files,
-                  acc_transactions ++ transactions,
-                  accounts,
-                  source_file,
-                  import_chain
-                )
-              else
-                # Not an include, continue processing
-                process_lines_and_includes(
-                  include_and_after,
-                  base_dir,
-                  seen_files,
-                  acc_transactions ++ transactions,
-                  accounts,
-                  source_file,
-                  import_chain
-                )
-              end
-          end
+          process_lines_and_includes(
+            include_and_after,
+            base_dir,
+            seen_files,
+            acc_transactions ++ transactions,
+            accounts,
+            source_file,
+            import_chain
+          )
 
         {:error, {reason, line, error_source_file}} ->
-          # Error parsing - add import chain if present
           if import_chain do
             {:error, {reason, line, error_source_file, import_chain}}
           else
             {:error, {reason, line, error_source_file}}
           end
-        end
       end
+    end
+  end
+
+  defp process_include_lines(
+         [],
+         _base_dir,
+         _seen_files,
+         acc_transactions,
+         accounts,
+         _source_file,
+         _import_chain
+       ) do
+    {:ok, acc_transactions, accounts}
+  end
+
+  defp process_include_lines(
+         [{include_line, line_num} | rest] = include_and_after,
+         base_dir,
+         seen_files,
+         acc_transactions,
+         accounts,
+         source_file,
+         import_chain
+       ) do
+    trimmed = String.trim(include_line)
+
+    if String.starts_with?(trimmed, "include ") do
+      process_include_directive(
+        trimmed,
+        line_num,
+        rest,
+        base_dir,
+        seen_files,
+        acc_transactions,
+        accounts,
+        source_file,
+        import_chain
+      )
     else
-      # No content before include, process the include directive
-      case include_and_after do
-        [] ->
-          {:ok, acc_transactions, accounts}
-
-        [{include_line, line_num} | rest] ->
-          trimmed = String.trim(include_line)
-
-          if String.starts_with?(trimmed, "include ") do
-            process_include_directive(
-              trimmed,
-              line_num,
-              rest,
-              base_dir,
-              seen_files,
-              acc_transactions,
-              accounts,
-              source_file,
-              import_chain
-            )
-          else
-            # Skip this line and continue
-            process_lines_and_includes(
-              rest,
-              base_dir,
-              seen_files,
-              acc_transactions,
-              accounts,
-              source_file,
-              import_chain
-            )
-          end
-      end
+      process_lines_and_includes(
+        include_and_after,
+        base_dir,
+        seen_files,
+        acc_transactions,
+        accounts,
+        source_file,
+        import_chain
+      )
     end
   end
 
@@ -877,7 +943,9 @@ defmodule ExLedger.LedgerParser do
     |> String.split("\n")
     |> Enum.all?(fn line ->
       trimmed = String.trim(line)
-      trimmed == "" or String.starts_with?(trimmed, ";") or String.starts_with?(trimmed, "account ")
+
+      trimmed == "" or String.starts_with?(trimmed, ";") or
+        String.starts_with?(trimmed, "account ")
     end)
   end
 
@@ -1007,19 +1075,21 @@ defmodule ExLedger.LedgerParser do
   defp build_import_chain(nil, _line_num, import_chain), do: import_chain
 
   defp build_import_chain(source_file, line_num, import_chain) do
-    [{source_file, line_num} | (import_chain || [])]
+    [{source_file, line_num} | import_chain || []]
   end
 
   defp split_transactions_with_line_numbers(input) do
     input
     |> String.split("\n")
     |> Enum.with_index(1)
-    |> Enum.reduce({[], [], nil, false}, fn {line, index}, {chunks, current_lines, start_line, in_account_block} ->
+    |> Enum.reduce({[], [], nil, false}, fn {line, index},
+                                            {chunks, current_lines, start_line, in_account_block} ->
       trimmed = String.trim(line)
 
       cond do
         # Account declaration (old single-line format with semicolon) - skip it
-        String.starts_with?(trimmed, "account ") and String.contains?(line, ";") and current_lines == [] ->
+        String.starts_with?(trimmed, "account ") and String.contains?(line, ";") and
+            current_lines == [] ->
           {chunks, [], nil, false}
 
         # Start of account declaration (new multi-line format) - enter account block mode
@@ -1027,7 +1097,8 @@ defmodule ExLedger.LedgerParser do
           {chunks, [], nil, true}
 
         # In account block and line is indented or empty - skip it
-        in_account_block and (trimmed == "" or String.starts_with?(line, " ") or String.starts_with?(line, "\t")) ->
+        in_account_block and
+            (trimmed == "" or String.starts_with?(line, " ") or String.starts_with?(line, "\t")) ->
           {chunks, [], nil, true}
 
         # In account block and line is not indented - exit account block mode
@@ -1070,7 +1141,8 @@ defmodule ExLedger.LedgerParser do
     Enum.reverse(chunks)
   end
 
-  defp finalize_transaction_chunks({chunks, current_lines, start_line, _in_account_block}) when current_lines != [] do
+  defp finalize_transaction_chunks({chunks, current_lines, start_line, _in_account_block})
+       when current_lines != [] do
     chunk = Enum.reverse(current_lines) |> Enum.join("\n")
     start = start_line || 1
     Enum.reverse([{chunk, start} | chunks])
@@ -1423,7 +1495,9 @@ defmodule ExLedger.LedgerParser do
 
   defp parent_account(account) do
     case String.split(account, ":") do
-      [_single] -> nil
+      [_single] ->
+        nil
+
       segments ->
         segments
         |> Enum.slice(0, length(segments) - 1)

@@ -36,51 +36,42 @@ defmodule ExLedger.CLI do
   end
 
   defp execute(%{file: file, command: "balance", strict?: strict?}) do
-    file
-    |> File.read()
-    |> case do
-      {:ok, contents} ->
-        # Get the directory of the main file for resolving includes
-        base_dir = Path.dirname(file)
-        # Get just the filename for error messages
-        filename = Path.basename(file)
+    base_dir = Path.dirname(file)
+    filename = Path.basename(file)
 
-        case ExLedger.LedgerParser.parse_ledger_with_includes(contents, base_dir, MapSet.new(), filename) do
-          {:ok, transactions, accounts} ->
-            # Resolve aliases in transactions before validation
-            resolved_transactions =
-              ExLedger.LedgerParser.resolve_transaction_aliases(transactions, accounts)
-
-            case maybe_validate_strict(resolved_transactions, accounts, strict?) do
-              :ok ->
-                resolved_transactions
-                |> ExLedger.LedgerParser.balance()
-                |> ExLedger.LedgerParser.format_balance()
-                |> IO.write()
-
-              {:error, {:undeclared_account, account_name}} ->
-                print_error("account '#{account_name}' is used but not declared (strict mode)")
-                System.halt(1)
-            end
-
-          {:error, {reason, line, source_file, import_chain}} ->
-            # Error in imported file - show error location and full import chain like a stack trace
-            import_trace =
-              Enum.map_join(import_chain, "\n", fn {import_file, import_line} ->
-                "    imported from #{format_error_location(import_file, import_line)}"
-              end)
-
-            error_msg = "failed to parse ledger file #{format_error_location(source_file, line)}: #{format_parse_error(reason)}\n#{import_trace}"
-            print_error(error_msg)
-            System.halt(1)
-
-          {:error, reason} ->
-            print_error("failed to parse ledger file #{format_error_location(file, nil)}: #{format_parse_error(reason)}")
-            System.halt(1)
-        end
-
-      {:error, reason} ->
+    with {:file_read, {:ok, contents}} <- {:file_read, File.read(file)},
+         {:parsed, {:ok, transactions, accounts}} <-
+           {:parsed,
+            ExLedger.LedgerParser.parse_ledger_with_includes(
+              contents,
+              base_dir,
+              MapSet.new(),
+              filename
+            )},
+         resolved_transactions =
+           ExLedger.LedgerParser.resolve_transaction_aliases(transactions, accounts),
+         {:validated, :ok} <-
+           {:validated, maybe_validate_strict(resolved_transactions, accounts, strict?)} do
+      resolved_transactions
+      |> ExLedger.LedgerParser.balance()
+      |> ExLedger.LedgerParser.format_balance()
+      |> IO.write()
+    else
+      {:file_read, {:error, reason}} ->
         print_error("cannot read file #{file}: #{:file.format_error(reason)}")
+        System.halt(1)
+
+      {:parsed, {:error, {reason, line, source_file, import_chain}}} ->
+        handle_parse_error({reason, line, source_file, import_chain}, file)
+
+      {:parsed, {:error, {reason, line, source_file}}} ->
+        handle_parse_error({reason, line, source_file}, file)
+
+      {:parsed, {:error, reason}} ->
+        handle_parse_error(reason, file)
+
+      {:validated, {:error, {:undeclared_account, account_name}}} ->
+        print_error("account '#{account_name}' is used but not declared (strict mode)")
         System.halt(1)
     end
   end
@@ -110,8 +101,8 @@ defmodule ExLedger.CLI do
 
     # Find any undeclared accounts
     case Enum.find(used_accounts, fn account ->
-      account not in declared_accounts
-    end) do
+           account not in declared_accounts
+         end) do
       nil -> :ok
       undeclared -> {:error, {:undeclared_account, undeclared}}
     end
@@ -138,8 +129,42 @@ defmodule ExLedger.CLI do
   defp format_error_location(file, line), do: "#{file}:#{line}"
 
   defp format_parse_error({:unexpected_input, rest}), do: "unexpected input #{inspect(rest)}"
-  defp format_parse_error({:include_not_found, filename}), do: "include file not found: #{filename}"
-  defp format_parse_error({:circular_include, filename}), do: "circular include detected: #{filename}"
+
+  defp format_parse_error({:include_not_found, filename}),
+    do: "include file not found: #{filename}"
+
+  defp format_parse_error({:circular_include, filename}),
+    do: "circular include detected: #{filename}"
+
   defp format_parse_error(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_parse_error(reason), do: inspect(reason)
+
+  defp handle_parse_error({reason, line, source_file, import_chain}, fallback_file) do
+    import_trace =
+      Enum.map_join(import_chain || [], "\n", fn {import_file, import_line} ->
+        "    imported from #{format_error_location(import_file, import_line)}"
+      end)
+
+    location = format_error_location(source_file || fallback_file, line)
+
+    error_msg =
+      "failed to parse ledger file #{location}: #{format_parse_error(reason)}\n#{import_trace}"
+
+    print_error(error_msg)
+    System.halt(1)
+  end
+
+  defp handle_parse_error({reason, line, source_file}, fallback_file) do
+    location = format_error_location(source_file || fallback_file, line)
+    print_error("failed to parse ledger file #{location}: #{format_parse_error(reason)}")
+    System.halt(1)
+  end
+
+  defp handle_parse_error(reason, fallback_file) do
+    print_error(
+      "failed to parse ledger file #{format_error_location(fallback_file, nil)}: #{format_parse_error(reason)}"
+    )
+
+    System.halt(1)
+  end
 end

@@ -3,8 +3,10 @@ include accounts_list
 ; Add opening balances
 include opening_balances-24.ledger
 
+alias exp = Expenses:Groceries
+
 2024/01/15 Grocery Store
-    Expenses:Groceries          $50.00
+    exp          $50.00
     Assets:Checking
 
 2024/01/20 Gas Station

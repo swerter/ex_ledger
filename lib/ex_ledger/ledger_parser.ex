@@ -35,7 +35,9 @@ defmodule ExLedger.LedgerParser do
         }
   @type account_declaration :: %{
           name: String.t(),
-          type: :expense | :revenue | :asset | :liability | :equity
+          type: :expense | :revenue | :asset | :liability | :equity,
+          aliases: [String.t()],
+          assertions: [String.t()]
         }
   @type parse_error ::
           :missing_date
@@ -325,7 +327,7 @@ defmodule ExLedger.LedgerParser do
     <<first_char::utf8>>
   end
 
-  @spec build_account_declaration(keyword()) :: account_declaration()
+  @spec build_account_declaration([{atom(), any()}, ...]) :: %{name: any(), type: any()}
   defp build_account_declaration(parts) do
     name = Keyword.get(parts, :account_name)
     type = Keyword.get(parts, :account_type)
@@ -549,6 +551,7 @@ defmodule ExLedger.LedgerParser do
   Extracts account declarations from a ledger file.
 
   Returns a map where keys are account names and values are account types.
+  Also supports aliases which are added to the map pointing to the main account name.
 
   ## Examples
 
@@ -557,15 +560,139 @@ defmodule ExLedger.LedgerParser do
       %{"Assets:Checking" => :asset}
 
   """
-  @spec extract_account_declarations(String.t()) :: %{String.t() => atom()}
+  @spec extract_account_declarations(String.t()) :: %{String.t() => atom() | String.t()}
   def extract_account_declarations(input) when is_binary(input) do
     input
     |> String.split("\n")
-    |> Enum.filter(&String.starts_with?(String.trim(&1), "account "))
-    |> Enum.reduce(%{}, fn line, acc ->
-      case parse_account_declaration(line) do
-        {:ok, %{name: name, type: type}} -> Map.put(acc, name, type)
-        {:error, _} -> acc
+    |> parse_account_blocks([])
+    |> build_account_map()
+  end
+
+  @spec parse_account_blocks([String.t()], [account_declaration()]) :: [account_declaration()]
+  defp parse_account_blocks([], acc), do: Enum.reverse(acc)
+
+  defp parse_account_blocks([line | rest], acc) do
+    trimmed = String.trim(line)
+
+    cond do
+      # Standalone alias directive: alias SHORT = FULL:ACCOUNT:NAME
+      String.starts_with?(trimmed, "alias ") ->
+        case parse_standalone_alias(trimmed) do
+          {:ok, alias_name, account_name} ->
+            # Create a pseudo-account entry for the alias
+            alias_entry = %{name: alias_name, type: :alias, aliases: [], assertions: [], target: account_name}
+            parse_account_blocks(rest, [alias_entry | acc])
+
+          {:error, _} ->
+            parse_account_blocks(rest, acc)
+        end
+
+      # Old format: account NAME  ; type:TYPE
+      String.starts_with?(trimmed, "account ") and String.contains?(line, ";") ->
+        case parse_account_declaration(line) do
+          {:ok, account} ->
+            # Add default empty lists for aliases and assertions
+            account = Map.merge(account, %{aliases: [], assertions: []})
+            parse_account_blocks(rest, [account | acc])
+
+          {:error, _} ->
+            parse_account_blocks(rest, acc)
+        end
+
+      # New format: account NAME (followed by indented lines)
+      String.starts_with?(trimmed, "account ") ->
+        {account_lines, remaining} = collect_account_block([line | rest])
+        account = parse_account_block(account_lines)
+        parse_account_blocks(remaining, [account | acc])
+
+      true ->
+        parse_account_blocks(rest, acc)
+    end
+  end
+
+  @spec parse_standalone_alias(String.t()) :: {:ok, String.t(), String.t()} | {:error, :invalid_alias}
+  defp parse_standalone_alias(line) do
+    # Parse: alias SHORT = FULL:ACCOUNT:NAME
+    case String.split(line, "=", parts: 2) do
+      [left, right] ->
+        alias_name = left |> String.replace_prefix("alias ", "") |> String.trim()
+        account_name = String.trim(right)
+
+        if alias_name != "" and account_name != "" do
+          {:ok, alias_name, account_name}
+        else
+          {:error, :invalid_alias}
+        end
+
+      _ ->
+        {:error, :invalid_alias}
+    end
+  end
+
+  @spec collect_account_block([String.t()]) :: {[String.t()], [String.t()]}
+  defp collect_account_block([first_line | rest]) do
+    {block_lines, remaining} =
+      Enum.split_while(rest, fn line ->
+        # Include lines that are indented (start with whitespace) or empty
+        trimmed = String.trim(line)
+        trimmed == "" or (String.starts_with?(line, " ") or String.starts_with?(line, "\t"))
+      end)
+
+    {[first_line | block_lines], remaining}
+  end
+
+  @spec parse_account_block([String.t()]) :: account_declaration()
+  defp parse_account_block([first_line | rest]) do
+    # Parse the account name from first line
+    account_name =
+      first_line
+      |> String.trim_leading("account")
+      |> String.trim()
+
+    # Parse indented lines for aliases and assertions
+    {aliases, assertions} =
+      rest
+      |> Enum.filter(fn line -> String.trim(line) != "" end)
+      |> Enum.reduce({[], []}, fn line, {aliases_acc, assertions_acc} ->
+        trimmed = String.trim(line)
+
+        cond do
+          String.starts_with?(trimmed, "alias ") ->
+            alias_name = String.trim_leading(trimmed, "alias") |> String.trim()
+            {[alias_name | aliases_acc], assertions_acc}
+
+          String.starts_with?(trimmed, "assert ") ->
+            assertion = String.trim_leading(trimmed, "assert") |> String.trim()
+            {aliases_acc, [assertion | assertions_acc]}
+
+          true ->
+            {aliases_acc, assertions_acc}
+        end
+      end)
+
+    %{
+      name: account_name,
+      type: :asset,
+      aliases: Enum.reverse(aliases),
+      assertions: Enum.reverse(assertions)
+    }
+  end
+
+  @spec build_account_map([account_declaration()]) :: %{String.t() => atom() | String.t()}
+  defp build_account_map(account_declarations) do
+    Enum.reduce(account_declarations, %{}, fn account, acc ->
+      # Handle standalone alias entries (type: :alias)
+      if account.type == :alias do
+        # For standalone alias, map the alias name to the target account name
+        Map.put(acc, account.name, account.target)
+      else
+        # Add the main account name -> type mapping
+        acc = Map.put(acc, account.name, account.type)
+
+        # Add each alias -> account name mapping
+        Enum.reduce(account.aliases, acc, fn alias_name, acc_inner ->
+          Map.put(acc_inner, alias_name, account.name)
+        end)
       end
     end)
   end
@@ -604,230 +731,346 @@ defmodule ExLedger.LedgerParser do
           | {:error, {:include_not_found, String.t()}}
           | {:error, {:circular_include, String.t()}}
           | {:error, {parse_error(), non_neg_integer(), String.t() | nil}}
-  def parse_ledger_with_includes(input, base_dir, seen_files \\ MapSet.new())
+  def parse_ledger_with_includes(input, base_dir, seen_files \\ MapSet.new(), source_file \\ nil)
 
-  def parse_ledger_with_includes("", _base_dir, _seen_files), do: {:ok, [], %{}}
+  def parse_ledger_with_includes("", _base_dir, _seen_files, _source_file), do: {:ok, [], %{}}
 
-  def parse_ledger_with_includes(input, base_dir, seen_files) do
-    parse_ledger_with_includes(input, base_dir, seen_files, nil)
+  def parse_ledger_with_includes(input, base_dir, seen_files, source_file) when is_binary(source_file) or is_nil(source_file) do
+    parse_ledger_with_includes_with_import(input, base_dir, seen_files, source_file, nil)
   end
 
-  defp parse_ledger_with_includes(input, base_dir, seen_files, source_file) do
+  defp parse_ledger_with_includes_with_import(input, base_dir, seen_files, source_file, import_chain) do
     # First extract account declarations
     accounts = extract_account_declarations(input)
 
+    # Process the file line by line, expanding includes in place while preserving order
     input
     |> String.split("\n")
-    |> process_lines_with_includes(base_dir, seen_files, [], accounts, source_file)
-    |> case do
-      {:ok, all_content, all_accounts} ->
-        # Parse the combined content as a ledger
-        combined = Enum.join(all_content, "\n")
+    |> Enum.with_index(1)
+    |> process_lines_and_includes(base_dir, seen_files, [], accounts, source_file, import_chain)
+  end
 
-        case parse_ledger(combined, source_file) do
-          {:ok, transactions} -> {:ok, transactions, all_accounts}
-          error -> error
+  @spec process_lines_and_includes(
+          [{String.t(), non_neg_integer()}],
+          String.t(),
+          MapSet.t(String.t()),
+          [transaction()],
+          %{String.t() => atom()},
+          String.t() | nil,
+          [{String.t(), non_neg_integer()}] | nil
+        ) ::
+          {:ok, [transaction()], %{String.t() => atom()}}
+          | {:error, {:include_not_found, String.t()}}
+          | {:error, {:circular_include, String.t()}}
+          | {:error, {parse_error(), non_neg_integer(), String.t() | nil, [{String.t(), non_neg_integer()}] | nil}}
+  defp process_lines_and_includes([], _base_dir, _seen_files, acc_transactions, accounts, _source_file, _import_chain) do
+    {:ok, acc_transactions, accounts}
+  end
+
+  defp process_lines_and_includes(lines, base_dir, seen_files, acc_transactions, accounts, source_file, import_chain) do
+    # Find the next include directive or end of non-include content
+    {before_include, include_and_after} = split_at_include(lines)
+
+    # Parse transactions in the before_include section (if any non-empty content)
+    if before_include != [] do
+      content = Enum.map_join(before_include, "\n", fn {line, _} -> line end)
+
+      # Skip parsing if content is empty or only whitespace/comments
+      if String.trim(content) == "" or only_comments_and_whitespace?(content) do
+        # No real content, just process includes
+        process_lines_and_includes(
+          include_and_after,
+          base_dir,
+          seen_files,
+          acc_transactions,
+          accounts,
+          source_file,
+          import_chain
+        )
+      else
+        case parse_ledger(content, source_file) do
+        {:ok, transactions} ->
+          # Continue with remaining lines (include and after)
+          case include_and_after do
+            [] ->
+              # No more includes, we're done
+              {:ok, acc_transactions ++ transactions, accounts}
+
+            [{include_line, line_num} | rest] ->
+              # Process the include directive
+              trimmed = String.trim(include_line)
+
+              if String.starts_with?(trimmed, "include ") do
+                process_include_directive(
+                  trimmed,
+                  line_num,
+                  rest,
+                  base_dir,
+                  seen_files,
+                  acc_transactions ++ transactions,
+                  accounts,
+                  source_file,
+                  import_chain
+                )
+              else
+                # Not an include, continue processing
+                process_lines_and_includes(
+                  include_and_after,
+                  base_dir,
+                  seen_files,
+                  acc_transactions ++ transactions,
+                  accounts,
+                  source_file,
+                  import_chain
+                )
+              end
+          end
+
+        {:error, {reason, line, error_source_file}} ->
+          # Error parsing - add import chain if present
+          if import_chain do
+            {:error, {reason, line, error_source_file, import_chain}}
+          else
+            {:error, {reason, line, error_source_file}}
+          end
         end
+      end
+    else
+      # No content before include, process the include directive
+      case include_and_after do
+        [] ->
+          {:ok, acc_transactions, accounts}
+
+        [{include_line, line_num} | rest] ->
+          trimmed = String.trim(include_line)
+
+          if String.starts_with?(trimmed, "include ") do
+            process_include_directive(
+              trimmed,
+              line_num,
+              rest,
+              base_dir,
+              seen_files,
+              acc_transactions,
+              accounts,
+              source_file,
+              import_chain
+            )
+          else
+            # Skip this line and continue
+            process_lines_and_includes(
+              rest,
+              base_dir,
+              seen_files,
+              acc_transactions,
+              accounts,
+              source_file,
+              import_chain
+            )
+          end
+      end
+    end
+  end
+
+  defp only_comments_and_whitespace?(content) do
+    content
+    |> String.split("\n")
+    |> Enum.all?(fn line ->
+      trimmed = String.trim(line)
+      trimmed == "" or String.starts_with?(trimmed, ";") or String.starts_with?(trimmed, "account ")
+    end)
+  end
+
+  defp split_at_include(lines) do
+    Enum.split_while(lines, fn {line, _line_num} ->
+      trimmed = String.trim(line)
+      # Keep taking lines until we hit an include directive
+      not String.starts_with?(trimmed, "include ")
+    end)
+  end
+
+  defp process_include_directive(
+         trimmed_line,
+         line_num,
+         rest,
+         base_dir,
+         seen_files,
+         acc_transactions,
+         accounts,
+         source_file,
+         import_chain
+       ) do
+    filename = extract_include_filename(trimmed_line)
+    absolute_path = resolve_include_path(base_dir, filename)
+
+    with :ok <- check_circular_include(seen_files, absolute_path, filename),
+         :ok <- check_file_exists(absolute_path, filename),
+         {:ok, included_content} <- read_included_file(absolute_path, filename) do
+      process_included_content(
+        included_content,
+        absolute_path,
+        filename,
+        line_num,
+        rest,
+        base_dir,
+        seen_files,
+        acc_transactions,
+        accounts,
+        source_file,
+        import_chain
+      )
+    end
+  end
+
+  defp extract_include_filename(trimmed_line) do
+    trimmed_line
+    |> String.replace_prefix("include ", "")
+    |> String.split(";")
+    |> List.first()
+    |> String.trim()
+  end
+
+  defp resolve_include_path(base_dir, filename) do
+    base_dir
+    |> Path.join(filename)
+    |> Path.expand()
+  end
+
+  defp check_circular_include(seen_files, absolute_path, filename) do
+    if MapSet.member?(seen_files, absolute_path) do
+      {:error, {:circular_include, filename}}
+    else
+      :ok
+    end
+  end
+
+  defp check_file_exists(absolute_path, filename) do
+    if File.exists?(absolute_path) do
+      :ok
+    else
+      {:error, {:include_not_found, filename}}
+    end
+  end
+
+  defp read_included_file(absolute_path, filename) do
+    case File.read(absolute_path) do
+      {:ok, content} -> {:ok, content}
+      {:error, reason} -> {:error, {:file_read_error, filename, reason}}
+    end
+  end
+
+  defp process_included_content(
+         included_content,
+         absolute_path,
+         filename,
+         line_num,
+         rest,
+         base_dir,
+         seen_files,
+         acc_transactions,
+         accounts,
+         source_file,
+         import_chain
+       ) do
+    included_dir = Path.dirname(absolute_path)
+    updated_seen = MapSet.put(seen_files, absolute_path)
+    new_import_chain = build_import_chain(source_file, line_num, import_chain)
+
+    result =
+      parse_ledger_with_includes_with_import(
+        included_content,
+        included_dir,
+        updated_seen,
+        filename,
+        new_import_chain
+      )
+
+    case result do
+      {:ok, included_transactions, included_accounts} ->
+        merged_accounts = Map.merge(accounts, included_accounts)
+
+        process_lines_and_includes(
+          rest,
+          base_dir,
+          seen_files,
+          acc_transactions ++ included_transactions,
+          merged_accounts,
+          source_file,
+          import_chain
+        )
 
       error ->
         error
     end
   end
 
-  @spec process_lines_with_includes(
-          [String.t()],
-          String.t(),
-          MapSet.t(String.t()),
-          [String.t()],
-          %{String.t() => atom()},
-          String.t() | nil
-        ) ::
-          {:ok, [String.t()], %{String.t() => atom()}}
-          | {:error, {:include_not_found, String.t()}}
-          | {:error, {:circular_include, String.t()}}
-  defp process_lines_with_includes([], _base_dir, _seen_files, acc, accounts, _source_file) do
-    {:ok, Enum.reverse(acc), accounts}
-  end
+  defp build_import_chain(nil, _line_num, import_chain), do: import_chain
 
-  defp process_lines_with_includes([line | rest], base_dir, seen_files, acc, accounts, source_file) do
-    trimmed = String.trim(line)
-
-    cond do
-      # Check if this is an account declaration - skip it, already processed
-      String.starts_with?(trimmed, "account ") ->
-        process_lines_with_includes(rest, base_dir, seen_files, acc, accounts, source_file)
-
-      # Check if this is an include directive
-      String.starts_with?(trimmed, "include ") ->
-        # Extract filename, removing any trailing comments
-        filename =
-          trimmed
-          |> String.replace_prefix("include ", "")
-          |> String.split(";")
-          |> List.first()
-          |> String.trim()
-
-        # Resolve the full path
-        include_path = Path.join(base_dir, filename)
-        absolute_path = Path.expand(include_path)
-
-        cond do
-          # Check for circular includes
-          MapSet.member?(seen_files, absolute_path) ->
-            {:error, {:circular_include, filename}}
-
-          # Check if file exists
-          not File.exists?(absolute_path) ->
-            {:error, {:include_not_found, filename}}
-
-          true ->
-            # Read and process the included file
-            case File.read(absolute_path) do
-              {:ok, included_content} ->
-                # Get the directory of the included file for nested includes
-                included_dir = Path.dirname(absolute_path)
-                updated_seen = MapSet.put(seen_files, absolute_path)
-
-                # Recursively process the included file with the filename as source
-                case parse_ledger_with_includes(included_content, included_dir, updated_seen, filename) do
-                  {:ok, included_transactions, included_accounts} ->
-                    # Merge account declarations
-                    merged_accounts = Map.merge(accounts, included_accounts)
-
-                    # Convert transactions back to ledger format and add to accumulator
-                    included_lines =
-                      included_transactions
-                      |> Enum.map(&transaction_to_lines/1)
-                      |> Enum.intersperse("")
-
-                    # Reverse included_lines so they appear in correct order after final reverse
-                    process_lines_with_includes(
-                      rest,
-                      base_dir,
-                      seen_files,
-                      Enum.reverse(included_lines) ++ acc,
-                      merged_accounts,
-                      source_file
-                    )
-
-                  error ->
-                    error
-                end
-
-              {:error, reason} ->
-                {:error, {:file_read_error, filename, reason}}
-            end
-        end
-
-      # Not an include directive or account declaration, just accumulate the line
-      true ->
-        process_lines_with_includes(rest, base_dir, seen_files, [line | acc], accounts, source_file)
-    end
-  end
-
-  @spec transaction_to_lines(transaction()) :: String.t()
-  defp transaction_to_lines(transaction) do
-    # Format the header line
-    code_part = if transaction.code != "", do: "(#{transaction.code}) ", else: ""
-    comment_part = if transaction.comment, do: "  ; #{transaction.comment}", else: ""
-
-    header =
-      "#{format_transaction_date(transaction.date)} #{code_part}#{transaction.payee}#{comment_part}"
-
-    # Format the postings
-    posting_lines =
-      Enum.map(transaction.postings, fn posting ->
-        # Format metadata, tags, and comments
-        notes =
-          []
-          |> add_metadata_lines(posting.metadata)
-          |> add_tag_lines(posting.tags)
-          |> add_comment_lines(posting.comments)
-
-        # Format the account and amount
-        amount_str =
-          if posting.amount do
-            currency = posting.amount.currency
-            value = posting.amount.value
-            sign = if value < 0, do: "-", else: ""
-            abs_value = abs(value)
-            formatted = :erlang.float_to_binary(abs_value, decimals: 2)
-            "  #{currency}#{sign}#{formatted}"
-          else
-            ""
-          end
-
-        account_line = "    #{posting.account}#{String.pad_leading(amount_str, 20)}"
-
-        Enum.join(notes ++ [account_line], "\n")
-      end)
-
-    Enum.join([header | posting_lines], "\n")
-  end
-
-  defp add_metadata_lines(lines, metadata) when map_size(metadata) == 0, do: lines
-
-  defp add_metadata_lines(lines, metadata) do
-    metadata_lines =
-      metadata
-      |> Enum.map(fn {key, value} -> "    ; #{key}: #{value}" end)
-
-    lines ++ metadata_lines
-  end
-
-  defp add_tag_lines(lines, []), do: lines
-
-  defp add_tag_lines(lines, tags) do
-    tag_lines = Enum.map(tags, fn tag -> "    ; :#{tag}:" end)
-    lines ++ tag_lines
-  end
-
-  defp add_comment_lines(lines, []), do: lines
-
-  defp add_comment_lines(lines, comments) do
-    comment_lines = Enum.map(comments, fn comment -> "    ; #{comment}" end)
-    lines ++ comment_lines
-  end
-
-  defp format_transaction_date(date) do
-    "#{date.year}/#{String.pad_leading(to_string(date.month), 2, "0")}/#{String.pad_leading(to_string(date.day), 2, "0")}"
+  defp build_import_chain(source_file, line_num, import_chain) do
+    [{source_file, line_num} | (import_chain || [])]
   end
 
   defp split_transactions_with_line_numbers(input) do
     input
     |> String.split("\n")
     |> Enum.with_index(1)
-    |> Enum.reduce({[], [], nil}, fn {line, index}, {chunks, current_lines, start_line} ->
+    |> Enum.reduce({[], [], nil, false}, fn {line, index}, {chunks, current_lines, start_line, in_account_block} ->
       trimmed = String.trim(line)
 
       cond do
+        # Account declaration (old single-line format with semicolon) - skip it
+        String.starts_with?(trimmed, "account ") and String.contains?(line, ";") and current_lines == [] ->
+          {chunks, [], nil, false}
+
+        # Start of account declaration (new multi-line format) - enter account block mode
+        String.starts_with?(trimmed, "account ") and current_lines == [] ->
+          {chunks, [], nil, true}
+
+        # In account block and line is indented or empty - skip it
+        in_account_block and (trimmed == "" or String.starts_with?(line, " ") or String.starts_with?(line, "\t")) ->
+          {chunks, [], nil, true}
+
+        # In account block and line is not indented - exit account block mode
+        in_account_block ->
+          # This line is not part of the account block, process it normally
+          start_line = start_line || index
+          {chunks, [line | current_lines], start_line, false}
+
         # Empty line - end current transaction chunk if any
         trimmed == "" ->
           if current_lines == [] do
-            {chunks, [], nil}
+            {chunks, [], nil, false}
           else
             chunk = Enum.reverse(current_lines) |> Enum.join("\n")
-            {[{chunk, start_line || index} | chunks], [], nil}
+            {[{chunk, start_line || index} | chunks], [], nil, false}
           end
 
         # Comment line (starts with ;) - skip it
         String.starts_with?(trimmed, ";") ->
-          {chunks, current_lines, start_line}
+          {chunks, current_lines, start_line, false}
+
+        # Include directive - skip it
+        String.starts_with?(trimmed, "include ") ->
+          {chunks, current_lines, start_line, false}
+
+        # Alias directive - skip it
+        String.starts_with?(trimmed, "alias ") ->
+          {chunks, current_lines, start_line, false}
 
         # Regular line - add to current chunk
         true ->
           start_line = start_line || index
-          {chunks, [line | current_lines], start_line}
+          {chunks, [line | current_lines], start_line, false}
       end
     end)
     |> finalize_transaction_chunks()
   end
 
-  defp finalize_transaction_chunks({chunks, [], _start_line}) do
+  defp finalize_transaction_chunks({chunks, [], _start_line, _in_account_block}) do
     Enum.reverse(chunks)
   end
 
-  defp finalize_transaction_chunks({chunks, current_lines, start_line}) do
+  defp finalize_transaction_chunks({chunks, current_lines, start_line, _in_account_block}) when current_lines != [] do
     chunk = Enum.reverse(current_lines) |> Enum.join("\n")
     start = start_line || 1
     Enum.reverse([{chunk, start} | chunks])
@@ -1025,6 +1268,58 @@ defmodule ExLedger.LedgerParser do
       end)
 
     result <> "\n"
+  end
+
+  @doc """
+  Resolves an account name or alias to the canonical account name.
+
+  If the name is an alias, returns the main account name it points to.
+  If the name is already a main account name, returns it unchanged.
+  If the name is not found in the account map, returns it unchanged.
+
+  ## Examples
+
+      iex> accounts = %{"Assets:Checking" => :asset, "checking" => "Assets:Checking"}
+      iex> ExLedger.LedgerParser.resolve_account_name("checking", accounts)
+      "Assets:Checking"
+
+      iex> accounts = %{"Assets:Checking" => :asset, "checking" => "Assets:Checking"}
+      iex> ExLedger.LedgerParser.resolve_account_name("Assets:Checking", accounts)
+      "Assets:Checking"
+  """
+  @spec resolve_account_name(String.t(), %{String.t() => atom() | String.t()}) :: String.t()
+  def resolve_account_name(account_name, account_map) do
+    case Map.get(account_map, account_name) do
+      # If the value is a string, it's an alias pointing to another account
+      target when is_binary(target) -> target
+      # If the value is an atom (account type) or nil, return the original name
+      _ -> account_name
+    end
+  end
+
+  @doc """
+  Resolves all account names in transactions from aliases to canonical names.
+
+  ## Examples
+
+      iex> transactions = [%{postings: [%{account: "checking", amount: %{value: -10.0, currency: "$"}}]}]
+      iex> accounts = %{"Assets:Checking" => :asset, "checking" => "Assets:Checking"}
+      iex> ExLedger.LedgerParser.resolve_transaction_aliases(transactions, accounts)
+      [%{postings: [%{account: "Assets:Checking", amount: %{value: -10.0, currency: "$"}}]}]
+  """
+  @spec resolve_transaction_aliases([transaction()], %{String.t() => atom() | String.t()}) :: [
+          transaction()
+        ]
+  def resolve_transaction_aliases(transactions, account_map) do
+    Enum.map(transactions, fn transaction ->
+      postings =
+        Enum.map(transaction.postings, fn posting ->
+          resolved_account = resolve_account_name(posting.account, account_map)
+          %{posting | account: resolved_account}
+        end)
+
+      %{transaction | postings: postings}
+    end)
   end
 
   @doc """

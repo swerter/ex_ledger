@@ -706,7 +706,7 @@ defmodule ExLedger.LedgerParserTest do
           Income
       """
 
-      assert {:error, {:missing_payee, 5}} = LedgerParser.parse_ledger(input)
+      assert {:error, {:missing_payee, 5, nil}} = LedgerParser.parse_ledger(input)
     end
   end
 
@@ -1045,7 +1045,6 @@ defmodule ExLedger.LedgerParserTest do
     test "ignores invalid account declarations" do
       input = """
       account Assets:Checking  ; type:asset
-      account Invalid Line
       account Another:Account  ; type:invalid_type
 
       2009/10/29 Panera Bread
@@ -1336,6 +1335,149 @@ defmodule ExLedger.LedgerParserTest do
       {:ok, content} = File.read(main_file)
       # Should return an error about the parse failure in the included file
       assert {:error, _} = LedgerParser.parse_ledger_with_includes(content, test_dir)
+    end
+  end
+
+  describe "account aliases" do
+    test "extracts account declarations with aliases (new format)" do
+      input = """
+      account Expenses:Groceries
+              assert commodity == "CHF"
+              alias postkonto
+      account Assets:Checking
+              alias checking
+              alias bank
+
+      2009/10/29 Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+      """
+
+      accounts = LedgerParser.extract_account_declarations(input)
+
+      # Should have main account names mapped to types
+      assert accounts["Expenses:Groceries"] == :asset
+      assert accounts["Assets:Checking"] == :asset
+
+      # Should have aliases mapped to account names
+      assert accounts["postkonto"] == "Expenses:Groceries"
+      assert accounts["checking"] == "Assets:Checking"
+      assert accounts["bank"] == "Assets:Checking"
+    end
+
+    test "extracts account declarations without aliases (new format)" do
+      input = """
+      account Expenses:Food
+      account Assets:Checking
+              assert commodity == "USD"
+
+      2009/10/29 Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+      """
+
+      accounts = LedgerParser.extract_account_declarations(input)
+
+      # Should only have main account names
+      assert accounts["Expenses:Food"] == :asset
+      assert accounts["Assets:Checking"] == :asset
+      assert map_size(accounts) == 2
+    end
+
+    test "resolves account name when given an alias" do
+      accounts = %{
+        "Assets:Checking" => :asset,
+        "checking" => "Assets:Checking",
+        "bank" => "Assets:Checking"
+      }
+
+      assert LedgerParser.resolve_account_name("checking", accounts) == "Assets:Checking"
+      assert LedgerParser.resolve_account_name("bank", accounts) == "Assets:Checking"
+    end
+
+    test "resolves account name when given a main account name" do
+      accounts = %{
+        "Assets:Checking" => :asset,
+        "checking" => "Assets:Checking"
+      }
+
+      assert LedgerParser.resolve_account_name("Assets:Checking", accounts) == "Assets:Checking"
+    end
+
+    test "resolves account name for unknown account" do
+      accounts = %{
+        "Assets:Checking" => :asset,
+        "checking" => "Assets:Checking"
+      }
+
+      assert LedgerParser.resolve_account_name("Unknown:Account", accounts) == "Unknown:Account"
+    end
+
+    test "resolves transaction aliases" do
+      transactions = [
+        %{
+          date: ~D[2009-10-29],
+          code: "",
+          payee: "Test",
+          comment: nil,
+          postings: [
+            %{account: "checking", amount: %{value: -10.0, currency: "$"}, metadata: %{}, tags: [], comments: []},
+            %{account: "food", amount: %{value: 10.0, currency: "$"}, metadata: %{}, tags: [], comments: []}
+          ]
+        }
+      ]
+
+      accounts = %{
+        "Assets:Checking" => :asset,
+        "Expenses:Food" => :expense,
+        "checking" => "Assets:Checking",
+        "food" => "Expenses:Food"
+      }
+
+      resolved = LedgerParser.resolve_transaction_aliases(transactions, accounts)
+
+      assert Enum.at(resolved, 0).postings |> Enum.at(0) |> Map.get(:account) == "Assets:Checking"
+      assert Enum.at(resolved, 0).postings |> Enum.at(1) |> Map.get(:account) == "Expenses:Food"
+    end
+
+    test "handles mixed old and new account declaration formats" do
+      input = """
+      account Income:Salary  ; type:revenue
+      account Expenses:Groceries
+              alias groceries
+      account Assets:Checking  ; type:asset
+
+      2009/10/29 Test
+          Expenses:Food               $4.50
+          Assets:Checking
+      """
+
+      accounts = LedgerParser.extract_account_declarations(input)
+
+      # Old format accounts
+      assert accounts["Income:Salary"] == :revenue
+      assert accounts["Assets:Checking"] == :asset
+
+      # New format account with alias
+      assert accounts["Expenses:Groceries"] == :asset
+      assert accounts["groceries"] == "Expenses:Groceries"
+    end
+
+    test "parses account block with multiple assertions and aliases" do
+      input = """
+      account Expenses:Groceries
+              assert commodity == "CHF"
+              alias postkonto
+              alias groceries
+              assert balance >= 0
+
+      """
+
+      accounts = LedgerParser.extract_account_declarations(input)
+
+      assert accounts["Expenses:Groceries"] == :asset
+      assert accounts["postkonto"] == "Expenses:Groceries"
+      assert accounts["groceries"] == "Expenses:Groceries"
     end
   end
 end

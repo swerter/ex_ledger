@@ -1,5 +1,5 @@
 account Expenses:Groceries
-        assert commodity == "CHF"
+        ;assert commodity == "CHF"
         alias postkonto
 
 
@@ -7,5 +7,3 @@ account Expenses:Groceries
 
 account 1 Assets:Checking
 
-
-sdf

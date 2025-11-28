@@ -369,11 +369,11 @@ defmodule ExLedger.LedgerParserTest do
       assert posting2.amount == %{value: -136.30, currency: "USD"}
 
       balance_should_txt = """
-      USD -136.30  1 Assets:10 Turnover:1022 Abb
-        CHF 60.18  5 Personal:58 Other:5880 Other Personal expenses
-      --------------------
-        CHF 60.18
-      USD -136.30
+         USD -136.30  1 Assets:10 Turnover:1022 Abb
+           CHF 60.18  5 Personal:58 Other:5880 Other Personal expenses
+--------------------
+           CHF 60.18
+         USD -136.30
       """
 
       balance_txt =

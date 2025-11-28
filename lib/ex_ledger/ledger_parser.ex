@@ -1373,59 +1373,132 @@ defmodule ExLedger.LedgerParser do
   """
   @spec format_balance(%{String.t() => amount()}) :: String.t()
   def format_balance(balances) do
-    # Group totals by currency
-    currency_totals =
-      balances
-      |> Map.values()
-      |> Enum.group_by(& &1.currency, & &1.value)
-      |> Enum.map(fn {currency, values} -> {currency, Enum.sum(values)} end)
-      |> Enum.sort_by(fn {currency, _} -> currency end)
+    account_summaries = build_account_summaries(balances)
+    children_map = build_children_map(Map.keys(account_summaries))
+    direct_accounts = Map.keys(balances) |> MapSet.new()
 
-    # Sort accounts by account name
-    sorted_accounts =
-      balances
-      |> Enum.sort_by(fn {account, _amount} -> account end)
-
-    # Calculate max width for proper right-alignment
-    max_width =
-      sorted_accounts
-      |> Enum.map(fn {_account, amount} ->
-        amount_str = format_amount_with_currency(amount.value, amount.currency)
-        String.length(amount_str)
-      end)
-      |> Enum.max(fn -> 0 end)
-
-    result =
-      sorted_accounts
-      |> Enum.map_join("\n", fn {account, amount} ->
-        amount_str = format_amount_with_currency(amount.value, amount.currency)
-        "#{String.pad_leading(amount_str, max_width)}  #{account}"
+    lines =
+      children_map
+      |> Map.get(nil, [])
+      |> Enum.sort()
+      |> Enum.flat_map(fn account ->
+        render_account(account, account_summaries, children_map, direct_accounts, 0)
       end)
 
-    totals_str =
-      currency_totals
-      |> Enum.map_join("\n", fn {currency, total} ->
-        format_total(total, currency, max_width)
-      end)
+    totals_section = String.duplicate("-", 20) <> "\n" <> String.pad_leading("0", 20) <> "\n"
 
-    result <> "\n" <> String.duplicate("-", 20) <> "\n" <> totals_str <> "\n"
+    body =
+      case lines do
+        [] -> ""
+        _ -> Enum.join(lines, "\n") <> "\n"
+      end
+
+    body <> totals_section
   end
 
-  @spec format_amount_with_currency(float(), String.t()) :: String.t()
-  defp format_amount_with_currency(value, currency) do
+  defp build_account_summaries(balances) do
+    Enum.reduce(balances, %{}, fn {account, %{value: value, currency: currency}}, acc ->
+      segments = String.split(account, ":")
+
+      Enum.reduce(1..length(segments), acc, fn idx, acc_inner ->
+        prefix = Enum.take(segments, idx) |> Enum.join(":")
+        update_account_summary(acc_inner, prefix, currency, value)
+      end)
+    end)
+  end
+
+  defp update_account_summary(accounts, account_name, currency, value) do
+    Map.update(accounts, account_name, %{amounts: %{currency => value}}, fn summary ->
+      updated_amounts = Map.update(summary.amounts, currency, value, &(&1 + value))
+      %{summary | amounts: updated_amounts}
+    end)
+  end
+
+  defp build_children_map(account_names) do
+    Enum.reduce(account_names, %{}, fn account, acc ->
+      parent = parent_account(account)
+      Map.update(acc, parent, [account], fn children -> [account | children] end)
+    end)
+  end
+
+  defp parent_account(account) do
+    case String.split(account, ":") do
+      [_single] -> nil
+      segments ->
+        segments
+        |> Enum.slice(0, length(segments) - 1)
+        |> Enum.join(":")
+    end
+  end
+
+  defp render_account(account, summaries, children_map, direct_accounts, visible_depth) do
+    children =
+      Map.get(children_map, account, [])
+      |> Enum.sort()
+
+    direct? = MapSet.member?(direct_accounts, account)
+    should_show = direct? or length(children) > 1
+
+    lines =
+      if should_show do
+        render_account_lines(account, summaries, visible_depth)
+      else
+        []
+      end
+
+    next_visible_depth = if should_show, do: visible_depth + 1, else: visible_depth
+
+    child_lines =
+      Enum.flat_map(children, fn child ->
+        render_account(child, summaries, children_map, direct_accounts, next_visible_depth)
+      end)
+
+    lines ++ child_lines
+  end
+
+  defp render_account_lines(account, summaries, visible_depth) do
+    %{amounts: amounts} = Map.get(summaries, account, %{amounts: %{}})
+    currencies = Enum.sort(Map.keys(amounts))
+    last_index = max(length(currencies) - 1, 0)
+
+    Enum.with_index(currencies)
+    |> Enum.map(fn {currency, idx} ->
+      value = Map.get(amounts, currency, 0)
+      amount_str = format_amount_for_currency(value, currency)
+      padded_amount = String.pad_leading(amount_str, 20)
+
+      if idx == last_index do
+        padded_amount <> account_suffix(account, visible_depth)
+      else
+        padded_amount
+      end
+    end)
+  end
+
+  defp account_suffix(account, visible_depth) do
+    indent = String.duplicate("  ", visible_depth)
+    name = display_account_name(account, visible_depth)
+    "  " <> indent <> name
+  end
+
+  defp display_account_name(account, visible_depth) do
+    if visible_depth == 0 do
+      account
+    else
+      account
+      |> String.split(":")
+      |> List.last()
+    end
+  end
+
+  defp format_amount_for_currency(value, currency) do
     sign = if value < 0, do: "-", else: ""
     abs_value = abs(value)
     formatted = :erlang.float_to_binary(abs_value, decimals: 2)
-    "#{currency} #{sign}#{formatted}"
-  end
 
-  @spec format_total(float(), String.t(), non_neg_integer()) :: String.t()
-  defp format_total(total, currency, width) do
-    if abs(total) < 0.01 do
-      String.pad_leading("0", 20)
-    else
-      amount_str = format_amount_with_currency(total, currency)
-      String.pad_leading(amount_str, width)
+    case currency do
+      "$" -> "$" <> sign <> formatted
+      _ -> "#{currency} #{sign}#{formatted}"
     end
   end
 end

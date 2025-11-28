@@ -57,10 +57,15 @@ defmodule ExLedger.CLI do
                 System.halt(1)
             end
 
-          {:error, {reason, line}} ->
-            print_error(
-              "failed to parse ledger file #{format_error_location(file, line)}: #{format_parse_error(reason)}"
-            )
+          {:error, {reason, line, source_file}} ->
+            error_msg =
+              if source_file do
+                "failed to parse ledger file #{format_error_location(source_file, line)}: #{format_parse_error(reason)}"
+              else
+                "failed to parse ledger file #{format_error_location(file, line)}: #{format_parse_error(reason)}"
+              end
+
+            print_error(error_msg)
             System.halt(1)
 
           {:error, reason} ->

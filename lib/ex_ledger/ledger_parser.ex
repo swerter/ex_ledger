@@ -523,12 +523,20 @@ defmodule ExLedger.LedgerParser do
   def parse_ledger(""), do: {:ok, []}
 
   def parse_ledger(input) do
+    parse_ledger(input, nil)
+  end
+
+  @spec parse_ledger(String.t(), String.t() | nil) ::
+          {:ok, [transaction()]} | {:error, {parse_error(), non_neg_integer(), String.t() | nil}}
+  def parse_ledger("", _source_file), do: {:ok, []}
+
+  def parse_ledger(input, source_file) do
     input
     |> split_transactions_with_line_numbers()
     |> Enum.reduce_while({:ok, []}, fn {transaction_string, line}, {:ok, acc} ->
       case parse_transaction(transaction_string) do
         {:ok, transaction} -> {:cont, {:ok, [transaction | acc]}}
-        {:error, reason} -> {:halt, {:error, {reason, line}}}
+        {:error, reason} -> {:halt, {:error, {reason, line, source_file}}}
       end
     end)
     |> case do
@@ -595,24 +603,28 @@ defmodule ExLedger.LedgerParser do
           {:ok, [transaction()], %{String.t() => atom()}}
           | {:error, {:include_not_found, String.t()}}
           | {:error, {:circular_include, String.t()}}
-          | {:error, {parse_error(), non_neg_integer()}}
+          | {:error, {parse_error(), non_neg_integer(), String.t() | nil}}
   def parse_ledger_with_includes(input, base_dir, seen_files \\ MapSet.new())
 
   def parse_ledger_with_includes("", _base_dir, _seen_files), do: {:ok, [], %{}}
 
   def parse_ledger_with_includes(input, base_dir, seen_files) do
+    parse_ledger_with_includes(input, base_dir, seen_files, nil)
+  end
+
+  defp parse_ledger_with_includes(input, base_dir, seen_files, source_file) do
     # First extract account declarations
     accounts = extract_account_declarations(input)
 
     input
     |> String.split("\n")
-    |> process_lines_with_includes(base_dir, seen_files, [], accounts)
+    |> process_lines_with_includes(base_dir, seen_files, [], accounts, source_file)
     |> case do
       {:ok, all_content, all_accounts} ->
         # Parse the combined content as a ledger
         combined = Enum.join(all_content, "\n")
 
-        case parse_ledger(combined) do
+        case parse_ledger(combined, source_file) do
           {:ok, transactions} -> {:ok, transactions, all_accounts}
           error -> error
         end
@@ -627,22 +639,23 @@ defmodule ExLedger.LedgerParser do
           String.t(),
           MapSet.t(String.t()),
           [String.t()],
-          %{String.t() => atom()}
+          %{String.t() => atom()},
+          String.t() | nil
         ) ::
           {:ok, [String.t()], %{String.t() => atom()}}
           | {:error, {:include_not_found, String.t()}}
           | {:error, {:circular_include, String.t()}}
-  defp process_lines_with_includes([], _base_dir, _seen_files, acc, accounts) do
+  defp process_lines_with_includes([], _base_dir, _seen_files, acc, accounts, _source_file) do
     {:ok, Enum.reverse(acc), accounts}
   end
 
-  defp process_lines_with_includes([line | rest], base_dir, seen_files, acc, accounts) do
+  defp process_lines_with_includes([line | rest], base_dir, seen_files, acc, accounts, source_file) do
     trimmed = String.trim(line)
 
     cond do
       # Check if this is an account declaration - skip it, already processed
       String.starts_with?(trimmed, "account ") ->
-        process_lines_with_includes(rest, base_dir, seen_files, acc, accounts)
+        process_lines_with_includes(rest, base_dir, seen_files, acc, accounts, source_file)
 
       # Check if this is an include directive
       String.starts_with?(trimmed, "include ") ->
@@ -675,8 +688,8 @@ defmodule ExLedger.LedgerParser do
                 included_dir = Path.dirname(absolute_path)
                 updated_seen = MapSet.put(seen_files, absolute_path)
 
-                # Recursively process the included file
-                case parse_ledger_with_includes(included_content, included_dir, updated_seen) do
+                # Recursively process the included file with the filename as source
+                case parse_ledger_with_includes(included_content, included_dir, updated_seen, filename) do
                   {:ok, included_transactions, included_accounts} ->
                     # Merge account declarations
                     merged_accounts = Map.merge(accounts, included_accounts)
@@ -693,7 +706,8 @@ defmodule ExLedger.LedgerParser do
                       base_dir,
                       seen_files,
                       Enum.reverse(included_lines) ++ acc,
-                      merged_accounts
+                      merged_accounts,
+                      source_file
                     )
 
                   error ->
@@ -707,7 +721,7 @@ defmodule ExLedger.LedgerParser do
 
       # Not an include directive or account declaration, just accumulate the line
       true ->
-        process_lines_with_includes(rest, base_dir, seen_files, [line | acc], accounts)
+        process_lines_with_includes(rest, base_dir, seen_files, [line | acc], accounts, source_file)
     end
   end
 

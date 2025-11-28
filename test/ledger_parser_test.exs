@@ -219,7 +219,7 @@ defmodule ExLedger.LedgerParserTest do
       assert transaction.code == nil
       assert transaction.payee == "Panera Bread"
 
-      [posting1, posting2] = transaction.postings
+      [_posting1, posting2] = transaction.postings
       assert posting2.amount == %{value: -4.50, currency: "$"}
     end
 
@@ -605,7 +605,7 @@ defmodule ExLedger.LedgerParserTest do
         %{
           date: ~D[2009-10-29],
           code: "XFER",
-          description: "Panera Bread",
+          payee: "Panera Bread",
           postings: [
             %{account: "Expenses:Food", amount: %{value: 4.50, currency: "$"}},
             %{account: "Assets:Checking", amount: %{value: -4.50, currency: "$"}}
@@ -614,7 +614,7 @@ defmodule ExLedger.LedgerParserTest do
         %{
           date: ~D[2009-10-30],
           code: "DEP",
-          description: "Pay day!",
+          payee: "Pay day!",
           postings: [
             %{account: "Assets:Checking", amount: %{value: 20.00, currency: "$"}},
             %{account: "Income", amount: %{value: -20.00, currency: "$"}}
@@ -623,7 +623,7 @@ defmodule ExLedger.LedgerParserTest do
         %{
           date: ~D[2009-10-30],
           code: "XFER",
-          description: "Panera Bread",
+          payee: "Panera Bread",
           postings: [
             %{account: "Expenses:Food", amount: %{value: 4.50, currency: "$"}},
             %{account: "Assets:Checking", amount: %{value: -4.50, currency: "$"}}
@@ -632,7 +632,7 @@ defmodule ExLedger.LedgerParserTest do
         %{
           date: ~D[2009-10-31],
           code: "559385768438A8D7",
-          description: "Panera Bread",
+          payee: "Panera Bread",
           postings: [
             %{account: "Expenses:Food", amount: %{value: 4.50, currency: "$"}},
             %{account: "Liabilities:Credit Card", amount: %{value: -4.50, currency: "$"}}

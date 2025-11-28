@@ -28,7 +28,7 @@ defmodule ExLedger.LedgerParser do
         }
   @type transaction :: %{
           date: Date.t(),
-          code: String.t() | nil,
+          code: String.t(),
           payee: String.t(),
           comment: String.t() | nil,
           postings: [posting()]
@@ -95,13 +95,27 @@ defmodule ExLedger.LedgerParser do
     |> optional(transaction_comment)
     |> ignore(string("\n"))
 
-  # Currency symbol
-  currency = ascii_char([?$]) |> replace("$")
+  # Negative sign indicator (allowed before or after currency)
+  sign = ascii_char([?-]) |> replace(:negative)
+
+  # Currency symbol or code
+  currency_symbol = ascii_char([?$]) |> replace("$")
+  currency_code = ascii_string([?A..?Z, ?a..?z], min: 1)
+
+  currency =
+    choice([
+      currency_symbol,
+      currency_code
+    ])
+    |> unwrap_and_tag(:currency)
 
   # Amount: optional negative sign, currency, digits with optional decimal
   amount_value =
-    optional(ascii_char([?-]) |> replace(:negative))
-    |> concat(currency |> unwrap_and_tag(:currency))
+    optional(sign)
+    |> concat(currency)
+    |> ignore(optional_whitespace)
+    |> optional(sign)
+    |> ignore(optional_whitespace)
     |> concat(integer(min: 1) |> unwrap_and_tag(:dollars))
     |> optional(
       ignore(string("."))
@@ -352,7 +366,7 @@ defmodule ExLedger.LedgerParser do
   defp build_transaction(parts) do
     parts
     |> Enum.reduce(
-      %{date: nil, code: nil, payee: nil, comment: nil, postings: []},
+      %{date: nil, code: "", payee: nil, comment: nil, postings: []},
       fn
         {:date, date}, acc -> %{acc | date: date}
         {:code, code}, acc -> %{acc | code: code}
@@ -459,20 +473,52 @@ defmodule ExLedger.LedgerParser do
   @doc """
   Parses a complete ledger file with multiple transactions.
   """
-  @spec parse_ledger(String.t()) :: {:ok, [transaction()]} | {:error, parse_error()}
+  @spec parse_ledger(String.t()) ::
+          {:ok, [transaction()]} | {:error, {parse_error(), non_neg_integer()}}
   def parse_ledger(""), do: {:ok, []}
   def parse_ledger(input) do
     input
-    |> String.split("\n\n", trim: true)
-    |> Enum.map(&parse_transaction/1)
-    |> Enum.reduce_while({:ok, []}, fn
-      {:ok, transaction}, {:ok, acc} -> {:cont, {:ok, [transaction | acc]}}
-      {:error, reason}, _acc -> {:halt, {:error, reason}}
+    |> split_transactions_with_line_numbers()
+    |> Enum.reduce_while({:ok, []}, fn {transaction_string, line}, {:ok, acc} ->
+      case parse_transaction(transaction_string) do
+        {:ok, transaction} -> {:cont, {:ok, [transaction | acc]}}
+        {:error, reason} -> {:halt, {:error, {reason, line}}}
+      end
     end)
     |> case do
       {:ok, transactions} -> {:ok, Enum.reverse(transactions)}
       error -> error
     end
+  end
+
+  defp split_transactions_with_line_numbers(input) do
+    input
+    |> String.split("\n")
+    |> Enum.with_index(1)
+    |> Enum.reduce({[], [], nil}, fn {line, index}, {chunks, current_lines, start_line} ->
+      if String.trim(line) == "" do
+        if current_lines == [] do
+          {chunks, [], nil}
+        else
+          chunk = Enum.reverse(current_lines) |> Enum.join("\n")
+          {[{chunk, start_line || index} | chunks], [], nil}
+        end
+      else
+        start_line = start_line || index
+        {chunks, [line | current_lines], start_line}
+      end
+    end)
+    |> finalize_transaction_chunks()
+  end
+
+  defp finalize_transaction_chunks({chunks, [], _start_line}) do
+    Enum.reverse(chunks)
+  end
+
+  defp finalize_transaction_chunks({chunks, current_lines, start_line}) do
+    chunk = Enum.reverse(current_lines) |> Enum.join("\n")
+    start = start_line || 1
+    Enum.reverse([{chunk, start} | chunks])
   end
 
   @doc """
@@ -569,20 +615,27 @@ defmodule ExLedger.LedgerParser do
         {:error, :multiple_nil_amounts}
 
       nil_count == 0 ->
-        total =
-          postings
-          |> Enum.map(fn p -> p.amount.value end)
-          |> Enum.sum()
+        currency_totals = sum_postings_by_currency(postings)
 
-        if abs(total) < 0.01 do
+        if Enum.all?(currency_totals, fn {_currency, total} -> abs(total) < 0.01 end) do
           :ok
         else
-          {:error, :unbalanced}
+          if map_size(currency_totals) > 1 do
+            :ok
+          else
+            {:error, :unbalanced}
+          end
         end
 
       true ->
         :ok
     end
+  end
+
+  defp sum_postings_by_currency(postings) do
+    Enum.reduce(postings, %{}, fn %{amount: %{value: value, currency: currency}}, acc ->
+      Map.update(acc, currency, value, &(&1 + value))
+    end)
   end
 
   @doc """
@@ -635,31 +688,36 @@ defmodule ExLedger.LedgerParser do
   @doc """
   Calculates the balance for each account by summing all postings.
 
-  Returns a map where keys are account names and values are the total balance amounts.
+  Returns a map where keys are account names and values are amount maps with value and currency.
 
   ## Examples
 
       iex> transactions = [
       ...>   %{postings: [
-      ...>     %{account: "Assets:Checking", amount: %{value: -4.50}},
-      ...>     %{account: "Expenses:Coffee", amount: %{value: 4.50}}
+      ...>     %{account: "Assets:Checking", amount: %{value: -4.50, currency: "$"}},
+      ...>     %{account: "Expenses:Coffee", amount: %{value: 4.50, currency: "$"}}
       ...>   ]},
       ...>   %{postings: [
-      ...>     %{account: "Assets:Checking", amount: %{value: -20.00}},
-      ...>     %{account: "Expenses:Coffee", amount: %{value: 20.00}}
+      ...>     %{account: "Assets:Checking", amount: %{value: -20.00, currency: "$"}},
+      ...>     %{account: "Expenses:Coffee", amount: %{value: 20.00, currency: "$"}}
       ...>   ]}
       ...> ]
       iex> ExLedger.LedgerParser.balance(transactions)
-      %{"Assets:Checking" => -24.50, "Expenses:Coffee" => 24.50}
+      %{"Assets:Checking" => %{value: -24.50, currency: "$"}, "Expenses:Coffee" => %{value: 24.50, currency: "$"}}
   """
-  @spec balance([transaction()]) :: %{String.t() => float()}
-  def balance(transactions) do
+  @spec balance([transaction()] | transaction()) :: %{String.t() => amount()}
+  def balance(transaction) when is_map(transaction) do
+    balance([transaction])
+  end
+
+  def balance(transactions) when is_list(transactions) do
     transactions
     |> Enum.flat_map(fn transaction -> transaction.postings end)
     |> Enum.group_by(fn posting -> posting.account end)
     |> Enum.map(fn {account, postings} ->
       total = postings |> Enum.map(& &1.amount.value) |> Enum.sum()
-      {account, total}
+      currency = hd(postings).amount.currency
+      {account, %{value: total, currency: currency}}
     end)
     |> Map.new()
   end
@@ -672,33 +730,65 @@ defmodule ExLedger.LedgerParser do
 
   ## Examples
 
-      iex> balances = %{"Assets:Checking" => -23.00, "Expenses:Pacific Bell" => 23.00}
+      iex> balances = %{"Assets:Checking" => %{value: -23.00, currency: "$"}, "Expenses:Pacific Bell" => %{value: 23.00, currency: "$"}}
       iex> ExLedger.LedgerParser.format_balance(balances)
       \"             $-23.00  Assets:Checking\\n              $23.00  Expenses:Pacific Bell\\n--------------------\\n                   0\\n\"
   """
-  @spec format_balance(%{String.t() => float()}) :: String.t()
+  @spec format_balance(%{String.t() => amount()}) :: String.t()
   def format_balance(balances) do
-    total = balances |> Map.values() |> Enum.sum()
+    # Group totals by currency
+    currency_totals =
+      balances
+      |> Map.values()
+      |> Enum.group_by(& &1.currency, & &1.value)
+      |> Enum.map(fn {currency, values} -> {currency, Enum.sum(values)} end)
+      |> Enum.sort_by(fn {currency, _} -> currency end)
 
-    sorted_accounts = balances |> Map.keys() |> Enum.sort()
+    # Sort accounts by account name
+    sorted_accounts =
+      balances
+      |> Enum.sort_by(fn {account, _amount} -> account end)
+
+    # Calculate max width for proper right-alignment
+    max_width =
+      sorted_accounts
+      |> Enum.map(fn {_account, amount} ->
+        amount_str = format_amount_with_currency(amount.value, amount.currency)
+        String.length(amount_str)
+      end)
+      |> Enum.max(fn -> 0 end)
 
     result =
       sorted_accounts
-      |> Enum.map_join("\n", fn account ->
-        amount = Map.get(balances, account)
-        amount_str = ExLedger.format_amount(amount)
-        "#{String.pad_leading(amount_str, 20)}  #{account}"
+      |> Enum.map_join("\n", fn {account, amount} ->
+        amount_str = format_amount_with_currency(amount.value, amount.currency)
+        "#{String.pad_leading(amount_str, max_width)}  #{account}"
       end)
 
-    result <> "\n" <> String.duplicate("-", 20) <> "\n" <> format_total(total) <> "\n"
+    totals_str =
+      currency_totals
+      |> Enum.map_join("\n", fn {currency, total} ->
+        format_total(total, currency, max_width)
+      end)
+
+    result <> "\n" <> String.duplicate("-", 20) <> "\n" <> totals_str <> "\n"
   end
 
-  @spec format_total(float()) :: String.t()
-  defp format_total(total) do
+  @spec format_amount_with_currency(float(), String.t()) :: String.t()
+  defp format_amount_with_currency(value, currency) do
+    sign = if value < 0, do: "-", else: ""
+    abs_value = abs(value)
+    formatted = :erlang.float_to_binary(abs_value, decimals: 2)
+    "#{currency} #{sign}#{formatted}"
+  end
+
+  @spec format_total(float(), String.t(), non_neg_integer()) :: String.t()
+  defp format_total(total, currency, width) do
     if abs(total) < 0.01 do
       String.pad_leading("0", 20)
     else
-      String.pad_leading(ExLedger.format_amount(total), 20)
+      amount_str = format_amount_with_currency(total, currency)
+      String.pad_leading(amount_str, width)
     end
   end
 end

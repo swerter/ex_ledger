@@ -216,7 +216,7 @@ defmodule ExLedger.LedgerParserTest do
       assert {:ok, transaction} = LedgerParser.parse_transaction(input)
 
       assert transaction.date == ~D[2009-10-29]
-      assert transaction.code == nil
+      assert transaction.code == ""
       assert transaction.payee == "Panera Bread"
 
       [_posting1, posting2] = transaction.postings
@@ -272,10 +272,11 @@ defmodule ExLedger.LedgerParserTest do
 
       assert posting1.account == "Expenses:Food"
       assert posting1.metadata == %{"Type" => "Coffee"}
+
       assert posting1.comments == [
-        "Let's see, I ate a whole bunch of stuff, drank some coffee,",
-        "pondered a bagel, then decided against the donut."
-      ]
+               "Let's see, I ate a whole bunch of stuff, drank some coffee,",
+               "pondered a bagel, then decided against the donut."
+             ]
 
       assert posting2.account == "Assets:Checking"
     end
@@ -337,10 +338,50 @@ defmodule ExLedger.LedgerParserTest do
       [posting1, _posting2] = transaction.postings
 
       assert posting1.metadata == %{
-        "Type" => "Dining",
-        "Location" => "Downtown",
-        "Payment" => "Cash"
-      }
+               "Type" => "Dining",
+               "Location" => "Downtown",
+               "Payment" => "Cash"
+             }
+    end
+
+    test "parses transaction at sign in description" do
+      input = """
+      2025/01/10 LUFTHANSA-GRO 131.91 EUR @0.91677
+        ; todo: file missing
+        5 Personal:58 Other:5880 Other Personal expenses  CHF 60.18
+        1 Assets:10 Turnover:1022 Abb                          USD -136.30
+      """
+
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+
+      assert transaction.date == ~D[2025-01-10]
+      assert transaction.code == ""
+      assert transaction.payee == "LUFTHANSA-GRO 131.91 EUR @0.91677"
+      assert length(transaction.postings) == 2
+
+      [posting1, posting2] = transaction.postings
+
+      assert posting1.account == "5 Personal:58 Other:5880 Other Personal expenses"
+      assert posting1.amount == %{value: 60.18, currency: "CHF"}
+
+      assert posting2.account == "1 Assets:10 Turnover:1022 Abb"
+      # Should be automatically calculated as negative of first posting
+      assert posting2.amount == %{value: -136.30, currency: "USD"}
+
+      balance_should_txt = """
+      USD -136.30  1 Assets:10 Turnover:1022 Abb
+        CHF 60.18  5 Personal:58 Other:5880 Other Personal expenses
+      --------------------
+        CHF 60.18
+      USD -136.30
+      """
+
+      balance_txt =
+        transaction
+        |> ExLedger.LedgerParser.balance()
+        |> ExLedger.LedgerParser.format_balance()
+
+      assert balance_txt == balance_should_txt
     end
   end
 
@@ -429,7 +470,7 @@ defmodule ExLedger.LedgerParserTest do
       input = "; Let's see, I ate a whole bunch of stuff, drank some coffee,"
 
       assert {:ok, {:comment, "Let's see, I ate a whole bunch of stuff, drank some coffee,"}} =
-        LedgerParser.parse_note(input)
+               LedgerParser.parse_note(input)
     end
 
     test "distinguishes between tag and comment with colons" do
@@ -437,7 +478,8 @@ defmodule ExLedger.LedgerParserTest do
       assert {:ok, {:tag, "Eating"}} = LedgerParser.parse_note("; :Eating:")
 
       # Comment format: ; text with: colons
-      assert {:ok, {:comment, "Note: this is a comment"}} = LedgerParser.parse_note("; Note: this is a comment")
+      assert {:ok, {:comment, "Note: this is a comment"}} =
+               LedgerParser.parse_note("; Note: this is a comment")
     end
   end
 
@@ -541,9 +583,11 @@ defmodule ExLedger.LedgerParserTest do
 
       # Verify all transactions are balanced
       Enum.each(transactions, fn transaction ->
-        total = transaction.postings
-                |> Enum.map(& &1.amount.value)
-                |> Enum.sum()
+        total =
+          transaction.postings
+          |> Enum.map(& &1.amount.value)
+          |> Enum.sum()
+
         assert_in_delta total, 0.0, 0.01
       end)
     end
@@ -551,6 +595,20 @@ defmodule ExLedger.LedgerParserTest do
     test "handles empty input" do
       assert {:ok, []} = LedgerParser.parse_ledger("")
       assert {:ok, []} = LedgerParser.parse_ledger("\n\n")
+    end
+
+    test "includes start line for failing transaction" do
+      input = """
+      2009/10/29 (DEP) Pay day!
+          Assets:Checking            $20.00
+          Income
+
+      2009/10/30
+          Assets:Checking             $10.00
+          Income
+      """
+
+      assert {:error, {:missing_payee, 5}} = LedgerParser.parse_ledger(input)
     end
   end
 
@@ -643,70 +701,74 @@ defmodule ExLedger.LedgerParserTest do
       {:ok, transactions: transactions}
     end
 
-    test "returns postings for Expenses:Food account with running balance", %{transactions: transactions} do
+    test "returns postings for Expenses:Food account with running balance", %{
+      transactions: transactions
+    } do
       result = LedgerParser.get_account_postings(transactions, "Expenses:Food")
 
       assert length(result) == 3
 
       # First posting: 09-Oct-29 Panera Bread   Expenses:Food       $4.50     $4.50
       assert Enum.at(result, 0) == %{
-        date: ~D[2009-10-29],
-        description: "Panera Bread",
-        account: "Expenses:Food",
-        amount: 4.50,
-        balance: 4.50
-      }
+               date: ~D[2009-10-29],
+               description: "Panera Bread",
+               account: "Expenses:Food",
+               amount: 4.50,
+               balance: 4.50
+             }
 
       # Second posting: 09-Oct-30 Panera Bread   Expenses:Food       $4.50     $9.00
       assert Enum.at(result, 1) == %{
-        date: ~D[2009-10-30],
-        description: "Panera Bread",
-        account: "Expenses:Food",
-        amount: 4.50,
-        balance: 9.00
-      }
+               date: ~D[2009-10-30],
+               description: "Panera Bread",
+               account: "Expenses:Food",
+               amount: 4.50,
+               balance: 9.00
+             }
 
       # Third posting: 09-Oct-31 Panera Bread   Expenses:Food       $4.50     $13.50
       assert Enum.at(result, 2) == %{
-        date: ~D[2009-10-31],
-        description: "Panera Bread",
-        account: "Expenses:Food",
-        amount: 4.50,
-        balance: 13.50
-      }
+               date: ~D[2009-10-31],
+               description: "Panera Bread",
+               account: "Expenses:Food",
+               amount: 4.50,
+               balance: 13.50
+             }
     end
 
-    test "returns postings for Assets:Checking account with running balance", %{transactions: transactions} do
+    test "returns postings for Assets:Checking account with running balance", %{
+      transactions: transactions
+    } do
       result = LedgerParser.get_account_postings(transactions, "Assets:Checking")
 
       assert length(result) == 3
 
       # First: 09-Oct-29 Panera Bread   Assets:Checking   -$4.50    -$4.50
       assert Enum.at(result, 0) == %{
-        date: ~D[2009-10-29],
-        description: "Panera Bread",
-        account: "Assets:Checking",
-        amount: -4.50,
-        balance: -4.50
-      }
+               date: ~D[2009-10-29],
+               description: "Panera Bread",
+               account: "Assets:Checking",
+               amount: -4.50,
+               balance: -4.50
+             }
 
       # Second: 09-Oct-30 Pay day!   Assets:Checking   $20.00    $15.50
       assert Enum.at(result, 1) == %{
-        date: ~D[2009-10-30],
-        description: "Pay day!",
-        account: "Assets:Checking",
-        amount: 20.00,
-        balance: 15.50
-      }
+               date: ~D[2009-10-30],
+               description: "Pay day!",
+               account: "Assets:Checking",
+               amount: 20.00,
+               balance: 15.50
+             }
 
       # Third: 09-Oct-30 Panera Bread   Assets:Checking   -$4.50    $11.00
       assert Enum.at(result, 2) == %{
-        date: ~D[2009-10-30],
-        description: "Panera Bread",
-        account: "Assets:Checking",
-        amount: -4.50,
-        balance: 11.00
-      }
+               date: ~D[2009-10-30],
+               description: "Panera Bread",
+               account: "Assets:Checking",
+               amount: -4.50,
+               balance: 11.00
+             }
     end
 
     test "returns postings for Income account with running balance", %{transactions: transactions} do
@@ -715,26 +777,28 @@ defmodule ExLedger.LedgerParserTest do
       assert length(result) == 1
 
       assert Enum.at(result, 0) == %{
-        date: ~D[2009-10-30],
-        description: "Pay day!",
-        account: "Income",
-        amount: -20.00,
-        balance: -20.00
-      }
+               date: ~D[2009-10-30],
+               description: "Pay day!",
+               account: "Income",
+               amount: -20.00,
+               balance: -20.00
+             }
     end
 
-    test "returns postings for Liabilities:Credit Card account with running balance", %{transactions: transactions} do
+    test "returns postings for Liabilities:Credit Card account with running balance", %{
+      transactions: transactions
+    } do
       result = LedgerParser.get_account_postings(transactions, "Liabilities:Credit Card")
 
       assert length(result) == 1
 
       assert Enum.at(result, 0) == %{
-        date: ~D[2009-10-31],
-        description: "Panera Bread",
-        account: "Liabilities:Credit Card",
-        amount: -4.50,
-        balance: -4.50
-      }
+               date: ~D[2009-10-31],
+               description: "Panera Bread",
+               account: "Liabilities:Credit Card",
+               amount: -4.50,
+               balance: -4.50
+             }
     end
 
     test "returns empty list for non-existent account", %{transactions: transactions} do
@@ -743,7 +807,9 @@ defmodule ExLedger.LedgerParserTest do
       assert result == []
     end
 
-    test "calculates running balance correctly with multiple transactions", %{transactions: transactions} do
+    test "calculates running balance correctly with multiple transactions", %{
+      transactions: transactions
+    } do
       result = LedgerParser.get_account_postings(transactions, "Expenses:Food")
 
       # Verify running balance calculation

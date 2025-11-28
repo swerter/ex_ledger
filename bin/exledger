@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mix run -e 'ExLedger.CLI.main(System.argv())' -- "$@"

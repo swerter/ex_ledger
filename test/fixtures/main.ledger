@@ -5,10 +5,4 @@ include opening_balances-24.ledger
 
 alias exp = Expenses:Groceries
 
-2024/01/15 Grocery Store
-    exp          $50.00
-    Assets:Checking
-
-2024/01/20 Gas Station
-    Expenses:Gas                $40.00
-    Assets:Checking
+include all.ledger

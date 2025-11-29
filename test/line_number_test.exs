@@ -19,7 +19,9 @@ defmodule ExLedger.LineNumberTest do
       """
 
       # Line 11 has "sdf" which should cause a missing_date error
-      assert {:error, {reason, line, _source_file}} = LedgerParser.parse_ledger(input, "test.ledger")
+      assert {:error, {reason, line, _source_file}} =
+               LedgerParser.parse_ledger(input, "test.ledger")
+
       assert reason == :missing_date
       assert line == 11
     end
@@ -32,7 +34,9 @@ defmodule ExLedger.LineNumberTest do
       """
 
       # Line 3 has "invalid line here" which should cause a missing_date error
-      assert {:error, {reason, line, _source_file}} = LedgerParser.parse_ledger(input, "test.ledger")
+      assert {:error, {reason, line, _source_file}} =
+               LedgerParser.parse_ledger(input, "test.ledger")
+
       assert reason == :missing_date
       assert line == 3
     end
@@ -49,7 +53,9 @@ defmodule ExLedger.LineNumberTest do
       """
 
       # Line 7 has "bad data"
-      assert {:error, {reason, line, _source_file}} = LedgerParser.parse_ledger(input, "test.ledger")
+      assert {:error, {reason, line, _source_file}} =
+               LedgerParser.parse_ledger(input, "test.ledger")
+
       assert reason == :missing_date
       assert line == 7
     end
@@ -66,7 +72,9 @@ defmodule ExLedger.LineNumberTest do
       """
 
       # Line 7 has "error line"
-      assert {:error, {reason, line, _source_file}} = LedgerParser.parse_ledger(input, "test.ledger")
+      assert {:error, {reason, line, _source_file}} =
+               LedgerParser.parse_ledger(input, "test.ledger")
+
       assert reason == :missing_date
       assert line == 7
     end
@@ -91,6 +99,7 @@ defmodule ExLedger.LineNumberTest do
       test_dir = System.tmp_dir!()
 
       accounts_file = Path.join(test_dir, "test_accounts.ledger")
+
       File.write!(accounts_file, """
       account Expenses:Groceries
           assert commodity == "CHF"
@@ -116,14 +125,25 @@ defmodule ExLedger.LineNumberTest do
       %{test_dir: test_dir, accounts_file: accounts_file, main_file_content: main_file_content}
     end
 
-    test "reports correct line number in imported file", %{test_dir: test_dir, main_file_content: main_file_content} do
-      result = LedgerParser.parse_ledger_with_includes(main_file_content, test_dir, MapSet.new(), "main.ledger")
+    test "reports correct line number in imported file", %{
+      test_dir: test_dir,
+      main_file_content: main_file_content
+    } do
+      result =
+        LedgerParser.parse_ledger_with_includes(
+          main_file_content,
+          test_dir,
+          MapSet.new(),
+          "main.ledger"
+        )
 
       assert {:error, {reason, line, source_file, import_chain}} = result
       assert reason == :missing_date
-      assert line == 11  # Line 11 in test_accounts.ledger where "sdf" appears
+      # Line 11 in test_accounts.ledger where "sdf" appears
+      assert line == 11
       assert source_file == "test_accounts.ledger"
-      assert import_chain == [{"main.ledger", 1}]  # Imported from line 1 of main.ledger
+      # Imported from line 1 of main.ledger
+      assert import_chain == [{"main.ledger", 1}]
     end
   end
 end

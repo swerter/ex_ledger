@@ -1,9 +1,9 @@
 account Expenses:Groceries
-        ;assert commodity == "CHF"
+        assert commodity == "$"
         alias postkonto
 
 
 
 
-account 1 Assets:Checking
+account 1 Assets:Checking ; type:asset
 

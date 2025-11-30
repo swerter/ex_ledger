@@ -50,8 +50,21 @@ defmodule ExLedger.LedgerParser do
           | :parse_error
           | :unbalanced
           | :multiple_nil_amounts
+          | :multi_currency_missing_amount
           | :invalid_account_type
           | {:unexpected_input, String.t()}
+
+  @type parse_error_detail :: %{
+          reason: parse_error(),
+          line: non_neg_integer(),
+          file: String.t() | nil,
+          import_chain: [{String.t(), non_neg_integer()}] | nil
+        }
+
+  @type ledger_error ::
+          {:include_not_found, String.t()}
+          | {:circular_include, String.t()}
+          | parse_error_detail()
 
   @amount_regex ~r/[-+]?(?:\$|[A-Z]{1,5})?\d+(?:\.\d{1,2})?/
 
@@ -87,16 +100,18 @@ defmodule ExLedger.LedgerParser do
 
   defparsec(:account_declaration_parser, account_declaration)
 
-  # Date: YYYY/MM/DD
+  # Date: YYYY/MM/DD, YYYY/M/D, YYYY-MM-DD, or YYYY-M-D
+  # (allows 1 or 2 digits for month and day, and both / and - separators)
   year = integer(4)
-  month = integer(2)
-  day = integer(2)
+  month = integer(min: 1, max: 2)
+  day = integer(min: 1, max: 2)
+  date_separator = choice([string("/"), string("-")])
 
   date =
     year
-    |> ignore(string("/"))
+    |> ignore(date_separator)
     |> concat(month)
-    |> ignore(string("/"))
+    |> ignore(date_separator)
     |> concat(day)
     |> reduce({:to_date, []})
     |> unwrap_and_tag(:date)
@@ -149,17 +164,20 @@ defmodule ExLedger.LedgerParser do
     |> unwrap_and_tag(:currency)
 
   # Amount: optional negative sign, currency, digits with optional decimal
+  # Decimal part can have any number of digits (e.g., .5, .50, .12345)
+  # We capture decimal part as a string to preserve leading zeros
+  decimal_string = ascii_string([?0..?9], min: 1)
+
   amount_value =
     optional(sign)
     |> concat(currency)
     |> ignore(optional_whitespace)
     |> optional(sign)
     |> ignore(optional_whitespace)
-    |> concat(integer(min: 1) |> unwrap_and_tag(:dollars))
+    |> concat(integer(min: 1) |> unwrap_and_tag(:integer_part))
     |> optional(
       ignore(string("."))
-      |> integer(2)
-      |> unwrap_and_tag(:cents)
+      |> concat(decimal_string |> unwrap_and_tag(:decimal_string))
     )
     |> reduce({:to_amount, []})
 
@@ -173,12 +191,20 @@ defmodule ExLedger.LedgerParser do
     |> reduce({:join_account_parts, []})
     |> unwrap_and_tag(:account)
 
-  # Indentation: at least 2 spaces OR at least 1 tab
+  # Indentation: at least 1 space OR at least 1 tab
   indentation =
     choice([
       ascii_string([?\t], min: 1),
-      ascii_string([?\s], min: 2)
+      ascii_string([?\s], min: 1)
     ])
+
+  # Inline comment - comment at end of posting line
+  inline_comment =
+    ignore(optional_whitespace)
+    |> ignore(ascii_string([?;], min: 1))
+    |> ignore(optional_whitespace)
+    |> utf8_string([not: ?\n], min: 0)
+    |> optional()
 
   # Posting line with amount
   posting_with_amount =
@@ -186,6 +212,7 @@ defmodule ExLedger.LedgerParser do
     |> concat(account_name)
     |> ignore(ascii_string([?\s, ?\t], min: 2))
     |> concat(amount_value |> unwrap_and_tag(:amount))
+    |> ignore(inline_comment)
     |> ignore(optional_whitespace)
     |> ignore(optional(string("\n")))
     |> reduce({:to_posting, []})
@@ -194,14 +221,15 @@ defmodule ExLedger.LedgerParser do
   posting_without_amount =
     ignore(indentation)
     |> concat(account_name)
+    |> ignore(inline_comment)
     |> ignore(optional_whitespace)
     |> ignore(optional(string("\n")))
     |> reduce({:to_posting, []})
 
-  # Note line - starts with semicolon, can be comment/metadata/tag
+  # Note line - starts with one or more semicolons, can be comment/metadata/tag
   note_line =
     ignore(indentation)
-    |> ignore(string(";"))
+    |> ignore(ascii_string([?;], min: 1))
     |> ignore(ascii_string([?\s], min: 0))
     |> choice([
       # Tag: :TagName:
@@ -239,7 +267,7 @@ defmodule ExLedger.LedgerParser do
 
   # Note parser for individual notes
   note_tag =
-    ignore(string(";"))
+    ignore(ascii_string([?;], min: 1))
     |> ignore(optional_whitespace)
     |> ignore(string(":"))
     |> utf8_string([not: ?:], min: 1)
@@ -253,7 +281,7 @@ defmodule ExLedger.LedgerParser do
     |> reduce({:join_metadata_key, []})
 
   note_metadata =
-    ignore(string(";"))
+    ignore(ascii_string([?;], min: 1))
     |> ignore(optional_whitespace)
     |> concat(metadata_key)
     |> ignore(string(":"))
@@ -262,7 +290,7 @@ defmodule ExLedger.LedgerParser do
     |> reduce({:to_metadata_tuple, []})
 
   note_comment_only =
-    ignore(string(";"))
+    ignore(ascii_string([?;], min: 1))
     |> ignore(optional_whitespace)
     |> utf8_string([not: ?\n], min: 0)
     |> reduce({:to_comment, []})
@@ -303,10 +331,22 @@ defmodule ExLedger.LedgerParser do
     has_negative = Enum.member?(parts, :negative)
     sign = if has_negative, do: -1, else: 1
     currency = Keyword.get(parts, :currency, "$")
-    dollars = Keyword.get(parts, :dollars, 0)
-    cents = Keyword.get(parts, :cents, 0)
+    integer_part = Keyword.get(parts, :integer_part, 0)
 
-    value = sign * (dollars + cents / 100.0)
+    # Handle decimal part: convert to fractional value based on number of digits
+    # We use the string representation to preserve leading zeros (e.g., "01", "50", "5")
+    decimal_value = case Keyword.get(parts, :decimal_string) do
+      nil -> 0.0
+      decimal_string ->
+        # The number of digits determines the divisor
+        num_digits = String.length(decimal_string)
+        # Parse the string as an integer
+        decimal_int = String.to_integer(decimal_string)
+        divisor = :math.pow(10, num_digits)
+        decimal_int / divisor
+    end
+
+    value = sign * (integer_part + decimal_value)
 
     %{value: value, currency: currency}
   end
@@ -465,12 +505,12 @@ defmodule ExLedger.LedgerParser do
     first_line = Enum.at(lines, 0, "")
 
     cond do
-      # Check for date at start
-      not Regex.match?(~r/^\d{4}\/\d{2}\/\d{2}/, first_line) ->
+      # Check for date at start (supports both / and - separators)
+      not Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}/, first_line) ->
         {:error, :missing_date}
 
       # Check for payee (something after date and optional code)
-      not Regex.match?(~r/^\d{4}\/\d{2}\/\d{2}\s+(?:\([^)]+\)\s+)?(.+)/, first_line) ->
+      not Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}\s+(?:\([^)]+\)\s+)?(.+)/, first_line) ->
         {:error, :missing_payee}
 
       # Check indentation BEFORE checking postings count (invalid indentation might look like no postings)
@@ -505,8 +545,8 @@ defmodule ExLedger.LedgerParser do
     |> Enum.drop(1)
     |> Enum.filter(fn line -> String.trim(line) != "" end)
     |> Enum.any?(fn line ->
-      # Line doesn't start with enough whitespace
-      not Regex.match?(~r/^(\s{2,}|\t)/, line)
+      # Line doesn't start with at least 1 space or tab
+      not Regex.match?(~r/^(\s+|\t)/, line)
     end)
   end
 
@@ -789,11 +829,12 @@ defmodule ExLedger.LedgerParser do
       {:ok, [%{date: ~D[2009-01-01], ...}, %{date: ~D[2009-10-29], ...}], %{}}
 
   """
+  @spec parse_ledger_with_includes(String.t(), String.t()) ::
+          {:ok, [transaction()], %{String.t() => atom()}} | {:error, ledger_error()}
   @spec parse_ledger_with_includes(String.t(), String.t(), MapSet.t(String.t())) ::
-          {:ok, [transaction()], %{String.t() => atom()}}
-          | {:error, {:include_not_found, String.t()}}
-          | {:error, {:circular_include, String.t()}}
-          | {:error, {parse_error(), non_neg_integer(), String.t() | nil}}
+          {:ok, [transaction()], %{String.t() => atom()}} | {:error, ledger_error()}
+  @spec parse_ledger_with_includes(String.t(), String.t(), MapSet.t(String.t()), String.t() | nil) ::
+          {:ok, [transaction()], %{String.t() => atom()}} | {:error, ledger_error()}
   def parse_ledger_with_includes(input, base_dir, seen_files \\ MapSet.new(), source_file \\ nil)
 
   def parse_ledger_with_includes("", _base_dir, _seen_files, _source_file), do: {:ok, [], %{}}
@@ -830,12 +871,7 @@ defmodule ExLedger.LedgerParser do
   end
 
   @spec process_lines_and_includes([{String.t(), non_neg_integer()}], ParseContext.t()) ::
-          {:ok, [transaction()], %{String.t() => atom()}}
-          | {:error, {:include_not_found, String.t()}}
-          | {:error, {:circular_include, String.t()}}
-          | {:error,
-             {parse_error(), non_neg_integer(), String.t() | nil,
-              [{String.t(), non_neg_integer()}] | nil}}
+          {:ok, [transaction()], %{String.t() => atom()}} | {:error, ledger_error()}
   defp process_lines_and_includes([], context) do
     {:ok, context.transactions, context.accounts}
   end
@@ -900,12 +936,14 @@ defmodule ExLedger.LedgerParser do
     end)
   end
 
-  defp format_parse_error(reason, line, error_source_file, nil) do
-    {:error, {reason, line, error_source_file}}
-  end
-
   defp format_parse_error(reason, line, error_source_file, import_chain) do
-    {:error, {reason, line, error_source_file, import_chain}}
+    {:error,
+     %{
+       reason: reason,
+       line: line,
+       file: error_source_file,
+       import_chain: import_chain
+     }}
   end
 
   defp process_include_directive(trimmed_line, line_num, rest, context) do
@@ -1064,6 +1102,10 @@ defmodule ExLedger.LedgerParser do
     end
   end
 
+  defp starts_with_date?(line) do
+    Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}/, line)
+  end
+
   defp skippable_line?(trimmed) do
     String.starts_with?(trimmed, ";") or
       String.starts_with?(trimmed, "include ") or
@@ -1071,8 +1113,17 @@ defmodule ExLedger.LedgerParser do
   end
 
   defp handle_regular_line(line, index, chunks, current_lines, start_line) do
-    start_line = start_line || index
-    {chunks, [line | current_lines], start_line, false}
+    # Check if this line starts a new transaction (begins with a date)
+    # and we already have lines accumulated (meaning we're in the middle of parsing a transaction)
+    if starts_with_date?(line) and current_lines != [] do
+      # Finish the current transaction and start a new one
+      chunk = Enum.reverse(current_lines) |> Enum.join("\n")
+      {[{chunk, start_line} | chunks], [line], index, false}
+    else
+      # Continue accumulating lines for the current transaction
+      start_line = start_line || index
+      {chunks, [line | current_lines], start_line, false}
+    end
   end
 
   defp finalize_transaction_chunks({chunks, [], _start_line, _in_account_block}) do
@@ -1172,18 +1223,31 @@ defmodule ExLedger.LedgerParser do
     nil_count = Enum.count(postings, fn p -> is_nil(p.amount) end)
 
     if nil_count == 1 do
-      total =
+      # Check if this is a multi-currency transaction
+      currencies =
         postings
         |> Enum.filter(fn p -> !is_nil(p.amount) end)
-        |> Enum.map(fn p -> p.amount.value end)
-        |> Enum.sum()
+        |> Enum.map(fn p -> p.amount.currency end)
+        |> Enum.uniq()
 
-      currency =
+      if length(currencies) > 1 do
+        # Cannot auto-balance multi-currency transactions
+        # Return postings as-is and let validation catch it
         postings
-        |> Enum.find(fn p -> !is_nil(p.amount) end)
-        |> then(fn p -> p.amount.currency end)
+      else
+        total =
+          postings
+          |> Enum.filter(fn p -> !is_nil(p.amount) end)
+          |> Enum.map(fn p -> p.amount.value end)
+          |> Enum.sum()
 
-      Enum.map(postings, &fill_missing_amount(&1, total, currency))
+        currency =
+          postings
+          |> Enum.find(fn p -> !is_nil(p.amount) end)
+          |> then(fn p -> p.amount.currency end)
+
+        Enum.map(postings, &fill_missing_amount(&1, total, currency))
+      end
     else
       postings
     end
@@ -1201,7 +1265,7 @@ defmodule ExLedger.LedgerParser do
   @doc """
   Validates that a transaction is balanced (all postings sum to zero).
   """
-  @spec validate_transaction(transaction()) :: :ok | {:error, :multiple_nil_amounts | :unbalanced}
+  @spec validate_transaction(transaction()) :: :ok | {:error, :multiple_nil_amounts | :multi_currency_missing_amount | :unbalanced}
   def validate_transaction(%{postings: postings}) do
     nil_count = Enum.count(postings, fn p -> is_nil(p.amount) end)
 
@@ -1209,11 +1273,29 @@ defmodule ExLedger.LedgerParser do
       nil_count > 1 ->
         {:error, :multiple_nil_amounts}
 
+      nil_count == 1 ->
+        # Check if this is a multi-currency transaction with a missing amount
+        validate_single_missing_amount(postings)
+
       nil_count == 0 ->
         validate_balanced_postings(postings)
 
       true ->
         :ok
+    end
+  end
+
+  defp validate_single_missing_amount(postings) do
+    currencies =
+      postings
+      |> Enum.filter(fn p -> !is_nil(p.amount) end)
+      |> Enum.map(fn p -> p.amount.currency end)
+      |> Enum.uniq()
+
+    if length(currencies) > 1 do
+      {:error, :multi_currency_missing_amount}
+    else
+      :ok
     end
   end
 
@@ -1386,14 +1468,17 @@ defmodule ExLedger.LedgerParser do
   Returns a string with each account and its balance, followed by a separator line
   and the total (which should be 0 for balanced transactions).
 
+  The optional `show_empty` parameter controls whether to show accounts with zero balances.
+  Defaults to false (hide zero balances).
+
   ## Examples
 
       iex> balances = %{"Assets:Checking" => %{value: -23.00, currency: "$"}, "Expenses:Pacific Bell" => %{value: 23.00, currency: "$"}}
       iex> ExLedger.LedgerParser.format_balance(balances)
       \"             $-23.00  Assets:Checking\\n              $23.00  Expenses:Pacific Bell\\n--------------------\\n                   0\\n\"
   """
-  @spec format_balance(%{String.t() => amount()}) :: String.t()
-  def format_balance(balances) do
+  @spec format_balance(%{String.t() => amount()}, boolean()) :: String.t()
+  def format_balance(balances, show_empty \\ false) do
     account_summaries = build_account_summaries(balances)
     children_map = build_children_map(Map.keys(account_summaries))
     direct_accounts = Map.keys(balances) |> MapSet.new()
@@ -1403,10 +1488,10 @@ defmodule ExLedger.LedgerParser do
       |> Map.get(nil, [])
       |> Enum.sort()
       |> Enum.flat_map(fn account ->
-        render_account(account, account_summaries, children_map, direct_accounts, 0)
+        render_account(account, account_summaries, children_map, direct_accounts, 0, show_empty)
       end)
 
-    totals_section = String.duplicate("-", 20) <> "\n" <> String.pad_leading("0", 20) <> "\n"
+    totals_section = format_totals_section(balances)
 
     body =
       case lines do
@@ -1415,6 +1500,38 @@ defmodule ExLedger.LedgerParser do
       end
 
     body <> totals_section
+  end
+
+  defp format_totals_section(balances) do
+    currency_totals =
+      balances
+      |> Enum.reduce(%{}, fn {_account, %{value: value, currency: currency}}, acc ->
+        Map.update(acc, currency, value, &(&1 + value))
+      end)
+
+    separator = String.duplicate("-", 20) <> "\n"
+
+    if map_size(currency_totals) == 1 do
+      # Single currency - show as "0" or the total
+      [{_currency, total}] = Map.to_list(currency_totals)
+
+      if abs(total) < 0.01 do
+        separator <> String.pad_leading("0", 20) <> "\n"
+      else
+        separator <> String.pad_leading("0", 20) <> "\n"
+      end
+    else
+      # Multiple currencies - show each currency total
+      total_lines =
+        currency_totals
+        |> Enum.sort_by(fn {currency, _value} -> currency end)
+        |> Enum.map_join("\n", fn {currency, value} ->
+          amount_str = format_amount_for_currency(value, currency)
+          String.pad_leading(amount_str, 20)
+        end)
+
+      separator <> total_lines <> "\n"
+    end
   end
 
   defp build_account_summaries(balances) do
@@ -1454,7 +1571,7 @@ defmodule ExLedger.LedgerParser do
     end
   end
 
-  defp render_account(account, summaries, children_map, direct_accounts, visible_depth) do
+  defp render_account(account, summaries, children_map, direct_accounts, visible_depth, show_empty) do
     children =
       Map.get(children_map, account, [])
       |> Enum.sort()
@@ -1462,9 +1579,16 @@ defmodule ExLedger.LedgerParser do
     direct? = MapSet.member?(direct_accounts, account)
     should_show = direct? or length(children) > 1
 
+    # Check if account has non-zero balance
+    %{amounts: amounts} = Map.get(summaries, account, %{amounts: %{}})
+    has_non_zero_balance = Enum.any?(amounts, fn {_currency, value} -> abs(value) >= 0.01 end)
+
+    # Show account if: (has_non_zero_balance OR show_empty) AND should_show
+    should_render = (has_non_zero_balance or show_empty) and should_show
+
     lines =
-      if should_show do
-        render_account_lines(account, summaries, visible_depth)
+      if should_render do
+        render_account_lines(account, summaries, visible_depth, show_empty)
       else
         []
       end
@@ -1473,20 +1597,29 @@ defmodule ExLedger.LedgerParser do
 
     child_lines =
       Enum.flat_map(children, fn child ->
-        render_account(child, summaries, children_map, direct_accounts, next_visible_depth)
+        render_account(child, summaries, children_map, direct_accounts, next_visible_depth, show_empty)
       end)
 
     lines ++ child_lines
   end
 
-  defp render_account_lines(account, summaries, visible_depth) do
+  defp render_account_lines(account, summaries, visible_depth, show_empty) do
     %{amounts: amounts} = Map.get(summaries, account, %{amounts: %{}})
-    currencies = Enum.sort(Map.keys(amounts))
+
+    # Filter out zero-value currencies unless show_empty is true
+    filtered_amounts =
+      if show_empty do
+        amounts
+      else
+        Enum.filter(amounts, fn {_currency, value} -> abs(value) >= 0.01 end) |> Map.new()
+      end
+
+    currencies = Enum.sort(Map.keys(filtered_amounts))
     last_index = max(length(currencies) - 1, 0)
 
     Enum.with_index(currencies)
     |> Enum.map(fn {currency, idx} ->
-      value = Map.get(amounts, currency, 0)
+      value = Map.get(filtered_amounts, currency, 0)
       amount_str = format_amount_for_currency(value, currency)
       padded_amount = String.pad_leading(amount_str, 20)
 

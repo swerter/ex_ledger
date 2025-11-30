@@ -1,8 +1,10 @@
 defmodule ExLedger.CLI do
   @moduledoc false
 
-  @switches [file: :string, help: :boolean, strict: :boolean]
-  @aliases [f: :file, h: :help]
+  alias ExLedger.LedgerParser
+
+  @switches [file: :string, help: :boolean, strict: :boolean, empty: :boolean]
+  @aliases [f: :file, h: :help, E: :empty]
 
   @doc """
   Entry point for the CLI. Accepts arguments like `-f ledger.dat balance`.
@@ -21,7 +23,8 @@ defmodule ExLedger.CLI do
       file: opts[:file],
       command: List.first(commands) || "balance",
       help?: opts[:help] || false,
-      strict?: opts[:strict] || false
+      strict?: opts[:strict] || false,
+      empty?: opts[:empty] || false
     }
   end
 
@@ -35,7 +38,7 @@ defmodule ExLedger.CLI do
     System.halt(64)
   end
 
-  defp execute(%{file: file, command: "balance", strict?: strict?}) do
+  defp execute(%{file: file, command: "balance", strict?: strict?, empty?: empty?}) do
     base_dir = Path.dirname(file)
     filename = Path.basename(file)
 
@@ -54,21 +57,15 @@ defmodule ExLedger.CLI do
            {:validated, maybe_validate_strict(resolved_transactions, accounts, strict?)} do
       resolved_transactions
       |> ExLedger.LedgerParser.balance()
-      |> ExLedger.LedgerParser.format_balance()
+      |> ExLedger.LedgerParser.format_balance(empty?)
       |> IO.write()
     else
       {:file_read, {:error, reason}} ->
         print_error("cannot read file #{file}: #{:file.format_error(reason)}")
         System.halt(1)
 
-      {:parsed, {:error, {reason, line, source_file, import_chain}}} ->
-        handle_parse_error({reason, line, source_file, import_chain}, file)
-
-      {:parsed, {:error, {reason, line, source_file}}} ->
-        handle_parse_error({reason, line, source_file}, file)
-
-      {:parsed, {:error, reason}} ->
-        handle_parse_error(reason, file)
+      {:parsed, {:error, error}} ->
+        handle_parse_error(error, file)
 
       {:validated, {:error, {:undeclared_account, account_name}}} ->
         print_error("account '#{account_name}' is used but not declared (strict mode)")
@@ -115,6 +112,7 @@ defmodule ExLedger.CLI do
       "Options:",
       "  -f, --file    Path to the ledger file",
       "  -h, --help    Show this message",
+      "  -E, --empty   Show accounts whose total is zero",
       "  --strict      Require all accounts to be declared"
     ]
     |> Enum.join("\n")
@@ -136,33 +134,39 @@ defmodule ExLedger.CLI do
   defp format_parse_error({:circular_include, filename}),
     do: "circular include detected: #{filename}"
 
+  defp format_parse_error(:multi_currency_missing_amount),
+    do: "cannot auto-balance multi-currency transaction with missing amount"
+
   defp format_parse_error(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_parse_error(reason), do: inspect(reason)
 
-  defp handle_parse_error({reason, line, source_file, import_chain}, fallback_file) do
+  @spec handle_parse_error(LedgerParser.ledger_error(), String.t()) :: no_return()
+  defp handle_parse_error(%{reason: reason, line: line, file: source_file, import_chain: import_chain}, fallback_file) do
     import_trace =
-      Enum.map_join(import_chain || [], "\n", fn {import_file, import_line} ->
-        "    imported from #{format_error_location(import_file, import_line)}"
-      end)
+      if import_chain do
+        Enum.map_join(import_chain, "\n", fn {import_file, import_line} ->
+          "    imported from #{format_error_location(import_file, import_line)}"
+        end)
+      else
+        ""
+      end
 
     location = format_error_location(source_file || fallback_file, line)
 
     error_msg =
-      "failed to parse ledger file #{location}: #{format_parse_error(reason)}\n#{import_trace}"
+      if import_trace != "" do
+        "failed to parse ledger file #{location}: #{format_parse_error(reason)}\n#{import_trace}"
+      else
+        "failed to parse ledger file #{location}: #{format_parse_error(reason)}"
+      end
 
     print_error(error_msg)
     System.halt(1)
   end
 
-  defp handle_parse_error({reason, line, source_file}, fallback_file) do
-    location = format_error_location(source_file || fallback_file, line)
-    print_error("failed to parse ledger file #{location}: #{format_parse_error(reason)}")
-    System.halt(1)
-  end
-
-  defp handle_parse_error(reason, fallback_file) do
+  defp handle_parse_error(error, fallback_file) do
     print_error(
-      "failed to parse ledger file #{format_error_location(fallback_file, nil)}: #{format_parse_error(reason)}"
+      "failed to parse ledger file #{format_error_location(fallback_file, nil)}: #{format_parse_error(error)}"
     )
 
     System.halt(1)

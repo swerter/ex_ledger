@@ -32,14 +32,25 @@ defmodule ExLedger.LedgerParserTest do
       assert {:error, :insufficient_postings} = LedgerParser.parse_transaction(input)
     end
 
-    test "requires minimum 2-space indentation for postings" do
+    test "requires minimum 1-space indentation for postings" do
+      input = """
+      2009/11/01 Panera Bread
+Expenses:Food               $4.50
+Assets:Checking
+      """
+
+      assert {:error, :invalid_indentation} = LedgerParser.parse_transaction(input)
+    end
+
+    test "accepts postings with 1-space indentation" do
       input = """
       2009/11/01 Panera Bread
        Expenses:Food               $4.50
        Assets:Checking
       """
 
-      assert {:error, :invalid_indentation} = LedgerParser.parse_transaction(input)
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      assert length(transaction.postings) == 2
     end
 
     test "accepts postings with 2-space indentation" do
@@ -423,11 +434,11 @@ defmodule ExLedger.LedgerParserTest do
       assert posting2.amount == %{value: -136.30, currency: "USD"}
 
       balance_should_txt = """
-         USD -136.30  1 Assets:10 Turnover:1022 Abb
-           CHF 60.18  5 Personal:58 Other:5880 Other Personal expenses
+               USD -136.30  1 Assets:10 Turnover:1022 Abb
+                 CHF 60.18  5 Personal:58 Other:5880 Other Personal expenses
       --------------------
-           CHF 60.18
-         USD -136.30
+                 CHF 60.18
+               USD -136.30
       """
 
       balance_txt =
@@ -436,6 +447,32 @@ defmodule ExLedger.LedgerParserTest do
         |> ExLedger.LedgerParser.format_balance()
 
       assert balance_txt == balance_should_txt
+    end
+
+    test "parses transaction with single-digit decimal amounts" do
+      input = """
+      2024/07/21 Paypal payment from Tilted Windmill Press
+        1 Assets:Receivables:Paypal:USD    USD -75.0
+        6 Expenses:Bank:Fees    USD 8.4
+        5 Expenses:Training   CHF 66.6
+      """
+
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+
+      assert transaction.date == ~D[2024-07-21]
+      assert transaction.payee == "Paypal payment from Tilted Windmill Press"
+      assert length(transaction.postings) == 3
+
+      [posting1, posting2, posting3] = transaction.postings
+
+      assert posting1.account == "1 Assets:Receivables:Paypal:USD"
+      assert posting1.amount == %{value: -75.0, currency: "USD"}
+
+      assert posting2.account == "6 Expenses:Bank:Fees"
+      assert posting2.amount == %{value: 8.4, currency: "USD"}
+
+      assert posting3.account == "5 Expenses:Training"
+      assert posting3.amount == %{value: 66.6, currency: "CHF"}
     end
   end
 
@@ -448,7 +485,7 @@ defmodule ExLedger.LedgerParserTest do
 
     test "returns error for invalid date" do
       assert {:error, _reason} = LedgerParser.parse_date("invalid")
-      assert {:error, _reason} = LedgerParser.parse_date("2009-10-29")
+      assert {:error, _reason} = LedgerParser.parse_date("2009.10.29")
     end
   end
 
@@ -609,6 +646,25 @@ defmodule ExLedger.LedgerParserTest do
       assert {:ok, %{value: 20.0, currency: "$"}} = LedgerParser.parse_amount("$20")
     end
 
+    test "parses amounts with single-digit decimal" do
+      assert {:ok, %{value: 4.5, currency: "$"}} = LedgerParser.parse_amount("$4.5")
+      assert {:ok, %{value: 75.0, currency: "USD"}} = LedgerParser.parse_amount("USD 75.0")
+      assert {:ok, %{value: -75.0, currency: "USD"}} = LedgerParser.parse_amount("USD -75.0")
+      assert {:ok, %{value: 66.6, currency: "CHF"}} = LedgerParser.parse_amount("CHF 66.6")
+    end
+
+    test "parses amounts with varying decimal precision" do
+      assert {:ok, %{value: 4.5, currency: "$"}} = LedgerParser.parse_amount("$4.5")
+      assert {:ok, %{value: 4.50, currency: "$"}} = LedgerParser.parse_amount("$4.50")
+      assert {:ok, %{value: 4.123, currency: "$"}} = LedgerParser.parse_amount("$4.123")
+      assert {:ok, %{value: 4.12345, currency: "$"}} = LedgerParser.parse_amount("$4.12345")
+    end
+
+    test "parses amounts without decimal point" do
+      assert {:ok, %{value: 100.0, currency: "USD"}} = LedgerParser.parse_amount("USD 100")
+      assert {:ok, %{value: 0.0, currency: "CHF"}} = LedgerParser.parse_amount("CHF 0")
+    end
+
     test "returns error for invalid amounts" do
       assert {:error, _reason} = LedgerParser.parse_amount("invalid")
       assert {:error, _reason} = LedgerParser.parse_amount("")
@@ -749,6 +805,116 @@ defmodule ExLedger.LedgerParserTest do
     test "handles empty input" do
       assert {:ok, []} = LedgerParser.parse_ledger("")
       assert {:ok, []} = LedgerParser.parse_ledger("\n\n")
+    end
+
+    test "parses consecutive transactions without blank lines between them" do
+      input = """
+      2024/1/21 Transaction 1
+          Account:A  CHF 100.00
+          Account:B
+      2024/1/21 Transaction 2
+          Account:C  CHF 50.00
+          Account:D
+      2024/1/22 Transaction 3
+          Account:E  CHF 25.00
+          Account:F
+      """
+
+      assert {:ok, transactions} = LedgerParser.parse_ledger(input)
+
+      assert length(transactions) == 3
+
+      assert Enum.at(transactions, 0).date == ~D[2024-01-21]
+      assert Enum.at(transactions, 0).payee == "Transaction 1"
+      assert length(Enum.at(transactions, 0).postings) == 2
+
+      assert Enum.at(transactions, 1).date == ~D[2024-01-21]
+      assert Enum.at(transactions, 1).payee == "Transaction 2"
+      assert length(Enum.at(transactions, 1).postings) == 2
+
+      assert Enum.at(transactions, 2).date == ~D[2024-01-22]
+      assert Enum.at(transactions, 2).payee == "Transaction 3"
+      assert length(Enum.at(transactions, 2).postings) == 2
+    end
+
+    test "parses transaction with many postings and one nil amount" do
+      input = """
+      2024/1/21 Multi-posting transaction
+          Account:Main
+          Account:A  CHF -100.00
+          Account:B  CHF -200.00
+          Account:C  CHF -300.00
+      """
+
+      assert {:ok, [transaction]} = LedgerParser.parse_ledger(input)
+
+      assert transaction.date == ~D[2024-01-21]
+      assert transaction.payee == "Multi-posting transaction"
+      assert length(transaction.postings) == 4
+
+      # First posting should be auto-balanced to 600.00
+      assert Enum.at(transaction.postings, 0).amount.value == 600.00
+      assert Enum.at(transaction.postings, 1).amount.value == -100.00
+      assert Enum.at(transaction.postings, 2).amount.value == -200.00
+      assert Enum.at(transaction.postings, 3).amount.value == -300.00
+    end
+
+    test "parses consecutive transactions with multi-posting and double-semicolon comments" do
+      input = """
+      2024/1/21 Transaction 1
+          Account:A  CHF 100.00
+          Account:B
+      2024/1/21 Transaction 2
+          Account:Main
+          Account:A  CHF -530.00 ;; comment 1
+          Account:B  CHF -110.00 ;; comment 2
+          Account:C  CHF -116.80 ;; comment 3
+      """
+
+      assert {:ok, transactions} = LedgerParser.parse_ledger(input)
+
+      assert length(transactions) == 2
+
+      assert Enum.at(transactions, 0).date == ~D[2024-01-21]
+      assert Enum.at(transactions, 0).payee == "Transaction 1"
+      assert length(Enum.at(transactions, 0).postings) == 2
+
+      assert Enum.at(transactions, 1).date == ~D[2024-01-21]
+      assert Enum.at(transactions, 1).payee == "Transaction 2"
+      assert length(Enum.at(transactions, 1).postings) == 4
+    end
+
+    test "parses dates with dash separator (YYYY-MM-DD)" do
+      input = """
+      2024-06-01 Transaction with dash date
+          Account:A  CHF 100.00
+          Account:B
+      """
+
+      assert {:ok, [transaction]} = LedgerParser.parse_ledger(input)
+      assert transaction.date == ~D[2024-06-01]
+      assert transaction.payee == "Transaction with dash date"
+    end
+
+    test "parses amounts with single decimal digit correctly" do
+      input = """
+      2024/01/04 Test transaction
+          Account:A  USD 95.01
+          Account:B  USD 4.99
+          Account:C  USD -100.0
+      """
+
+      assert {:ok, [transaction]} = LedgerParser.parse_ledger(input)
+      assert length(transaction.postings) == 3
+
+      # Check amounts are parsed correctly
+      assert Enum.at(transaction.postings, 0).amount.value == 95.01
+      assert Enum.at(transaction.postings, 1).amount.value == 4.99
+      assert Enum.at(transaction.postings, 2).amount.value == -100.0
+
+      # Verify transaction balances
+      total = Enum.reduce(transaction.postings, 0.0, fn p, acc -> acc + p.amount.value end)
+      assert abs(total) < 0.01
     end
 
     test "includes start line for failing transaction" do
@@ -906,6 +1072,18 @@ defmodule ExLedger.LedgerParserTest do
         {:error, error} ->
           flunk("Parse failed with unexpected error: #{inspect(error)}. Expected :unbalanced")
       end
+    end
+
+    test "returns error for multi-currency transaction with missing amount" do
+      # Multi-currency transaction with one missing amount cannot be auto-balanced
+      input = """
+      2024/07/21 Paypal payment from Tilted Windmill Press
+        Assets:Receivables:Paypal:USD    USD -75.00
+        Expenses:Bank:Fees
+        Expenses:Training   CHF 66.61
+      """
+
+      assert {:error, :multi_currency_missing_amount} = LedgerParser.parse_transaction(input)
     end
   end
 
@@ -1677,6 +1855,59 @@ defmodule ExLedger.LedgerParserTest do
       assert accounts["Expenses:Groceries"] == :asset
       assert accounts["postkonto"] == "Expenses:Groceries"
       assert accounts["groceries"] == "Expenses:Groceries"
+    end
+  end
+
+  describe "format_balance/2 - zero balance filtering" do
+    test "hides zero-balance accounts by default" do
+      balances = %{
+        "Assets:Cash" => %{value: 100.0, currency: "$"},
+        "Assets:Bank" => %{value: 0.0, currency: "$"},
+        "Expenses:Food" => %{value: 50.0, currency: "$"},
+        "Income:Salary" => %{value: -150.0, currency: "$"}
+      }
+
+      result = LedgerParser.format_balance(balances, false)
+
+      # Should include non-zero accounts
+      assert result =~ "Cash"
+      assert result =~ "Expenses:Food"
+      assert result =~ "Income:Salary"
+
+      # Should NOT include zero-balance account
+      refute result =~ "Bank"
+    end
+
+    test "shows zero-balance accounts when show_empty is true" do
+      balances = %{
+        "Assets:Cash" => %{value: 100.0, currency: "$"},
+        "Assets:Bank" => %{value: 0.0, currency: "$"},
+        "Expenses:Food" => %{value: 50.0, currency: "$"},
+        "Income:Salary" => %{value: -150.0, currency: "$"}
+      }
+
+      result = LedgerParser.format_balance(balances, true)
+
+      # Should include all accounts
+      assert result =~ "Cash"
+      assert result =~ "Bank"
+      assert result =~ "Expenses:Food"
+      assert result =~ "Income:Salary"
+    end
+
+    test "hides zero-balance accounts by default (using default parameter)" do
+      balances = %{
+        "Assets:Cash" => %{value: 100.0, currency: "$"},
+        "Assets:Bank" => %{value: 0.0, currency: "$"}
+      }
+
+      result = LedgerParser.format_balance(balances)
+
+      # Should include non-zero account
+      assert result =~ "Cash"
+
+      # Should NOT include zero-balance account
+      refute result =~ "Bank"
     end
   end
 end

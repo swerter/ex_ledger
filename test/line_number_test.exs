@@ -137,13 +137,13 @@ defmodule ExLedger.LineNumberTest do
           "main.ledger"
         )
 
-      assert {:error, {reason, line, source_file, import_chain}} = result
-      assert reason == :missing_date
+      assert {:error, error} = result
+      assert error.reason == :missing_date
       # Line 11 in test_accounts.ledger where "sdf" appears
-      assert line == 11
-      assert source_file == "test_accounts.ledger"
+      assert error.line == 11
+      assert error.file == "test_accounts.ledger"
       # Imported from line 1 of main.ledger
-      assert import_chain == [{"main.ledger", 1}]
+      assert error.import_chain == [{"main.ledger", 1}]
     end
   end
 end

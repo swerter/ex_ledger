@@ -1083,7 +1083,7 @@ defmodule ExLedger.LedgerParser do
       trimmed == "" ->
         handle_empty_line(chunks, current_lines, start_line, index)
 
-      skippable_line?(trimmed) ->
+      skippable_line?(trimmed, current_lines) ->
         {chunks, current_lines, start_line, false}
 
       true ->
@@ -1123,10 +1123,11 @@ defmodule ExLedger.LedgerParser do
     Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}/, line)
   end
 
-  defp skippable_line?(trimmed) do
-    String.starts_with?(trimmed, ";") or
-      String.starts_with?(trimmed, "include ") or
-      String.starts_with?(trimmed, "alias ")
+  defp skippable_line?(trimmed, current_lines) do
+    current_lines == [] and
+      (String.starts_with?(trimmed, ";") or
+         String.starts_with?(trimmed, "include ") or
+         String.starts_with?(trimmed, "alias "))
   end
 
   defp handle_regular_line(line, index, chunks, current_lines, start_line) do
@@ -1529,14 +1530,11 @@ defmodule ExLedger.LedgerParser do
     separator = String.duplicate("-", 20) <> "\n"
 
     if map_size(currency_totals) == 1 do
-      # Single currency - show as "0" or the total
-      [{_currency, total}] = Map.to_list(currency_totals)
-
-      if abs(total) < 0.01 do
-        separator <> String.pad_leading("0", 20) <> "\n"
-      else
-        separator <> String.pad_leading("0", 20) <> "\n"
-      end
+      # Single currency - show formatted total (even when balanced)
+      [{currency, total}] = Map.to_list(currency_totals)
+      normalized_total = if abs(total) < 0.005, do: 0.0, else: total
+      amount_str = format_amount_for_currency(normalized_total, currency)
+      separator <> String.pad_leading(amount_str, 20) <> "\n"
     else
       # Multiple currencies - show each currency total
       total_lines =

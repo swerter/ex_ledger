@@ -859,6 +859,26 @@ Assets:Checking
       assert Enum.at(transaction.postings, 3).amount.value == -300.00
     end
 
+    test "keeps posting notes and metadata when parsing multiple transactions" do
+      input = """
+      2009/11/01 Panera Bread
+          ; Type: Coffee
+          ; :Eating:
+          ; Rounded up
+          Expenses:Food               $4.50
+          Assets:Checking
+      """
+
+      assert {:ok, [transaction]} = LedgerParser.parse_ledger(input)
+
+      [posting1, posting2] = transaction.postings
+
+      assert posting1.metadata == %{"Type" => "Coffee"}
+      assert posting1.tags == ["Eating"]
+      assert posting1.comments == ["Rounded up"]
+      assert posting2.metadata == %{}
+    end
+
     test "parses consecutive transactions with multi-posting and double-semicolon comments" do
       input = """
       2024/1/21 Transaction 1
@@ -1311,6 +1331,21 @@ Assets:Checking
       """
 
       assert String.trim(result) == String.trim(expected)
+    end
+  end
+
+  describe "format_balance/2" do
+    test "shows single-currency totals with currency and actual imbalance" do
+      balances = %{
+        "Assets:Checking" => %{value: -10.0, currency: "$"},
+        "Expenses:Coffee" => %{value: 5.0, currency: "$"}
+      }
+
+      result = LedgerParser.format_balance(balances)
+      lines = String.split(result, "\n")
+
+      # Totals line is second to last because output ends with a newline
+      assert Enum.at(lines, -2) == String.pad_leading("$-5.00", 20)
     end
   end
 

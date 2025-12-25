@@ -35,8 +35,8 @@ defmodule ExLedger.LedgerParserTest do
     test "requires minimum 1-space indentation for postings" do
       input = """
       2009/11/01 Panera Bread
-Expenses:Food               $4.50
-Assets:Checking
+      Expenses:Food               $4.50
+      Assets:Checking
       """
 
       assert {:error, :invalid_indentation} = LedgerParser.parse_transaction(input)
@@ -729,7 +729,8 @@ Assets:Checking
 
     test "parses amounts without decimal point" do
       assert {:ok, %{value: 100.0, currency: "USD"}} = LedgerParser.parse_amount("USD 100")
-      assert {:ok, %{value: 0.0, currency: "CHF"}} = LedgerParser.parse_amount("CHF 0")
+      assert {:ok, %{value: value, currency: "CHF"}} = LedgerParser.parse_amount("CHF 0")
+      assert value == 0.0
     end
 
     test "returns error for invalid amounts" do

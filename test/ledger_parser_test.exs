@@ -1910,4 +1910,25 @@ Assets:Checking
       refute result =~ "Bank"
     end
   end
+
+  describe "check_file/1" do
+    test "returns true for a valid ledger file" do
+      path = Path.join(System.tmp_dir!(), "valid.ledger")
+
+      File.write!(path, """
+      2024/01/15 Grocery Store
+          Expenses:Groceries          $50.00
+          Assets:Checking
+      """)
+
+      assert LedgerParser.check_file(path)
+    end
+
+    test "returns false for an invalid ledger file" do
+      path = Path.join(System.tmp_dir!(), "invalid.ledger")
+      File.write!(path, "not a ledger file")
+
+      refute LedgerParser.check_file(path)
+    end
+  end
 end

@@ -603,6 +603,23 @@ defmodule ExLedger.LedgerParser do
     parse_ledger(input, nil)
   end
 
+  @doc """
+  Checks whether the ledger file at the given path parses successfully.
+  """
+  @spec check_file(String.t()) :: boolean()
+  def check_file(path) when is_binary(path) do
+    base_dir = Path.dirname(path)
+    filename = Path.basename(path)
+
+    with {:ok, contents} <- File.read(path),
+         {:ok, _transactions, _accounts} <-
+           parse_ledger_with_includes(contents, base_dir, MapSet.new(), filename) do
+      true
+    else
+      _ -> false
+    end
+  end
+
   @spec parse_ledger(String.t(), String.t() | nil) ::
           {:ok, [transaction()]} | {:error, {parse_error(), non_neg_integer(), String.t() | nil}}
   def parse_ledger("", _source_file), do: {:ok, []}

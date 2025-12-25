@@ -7,7 +7,21 @@ defmodule ExLedger.MixProject do
       version: "0.1.0",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      releases: releases()
+    ]
+  end
+
+  defp releases do
+    [
+      exledger: [
+        steps: [:assemble, &Burrito.wrap/1],
+        burrito: [
+          targets: [
+            freebsd: [os: :freebsd, cpu: :x86_64]
+          ]
+        ]
+      ]
     ]
   end
 
@@ -22,6 +36,7 @@ defmodule ExLedger.MixProject do
   defp deps do
     [
       {:nimble_parsec, "~> 1.0"},
+      {:burrito, "~> 1.5"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]

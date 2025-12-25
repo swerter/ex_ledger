@@ -66,7 +66,7 @@ defmodule ExLedger.LedgerParser do
           | {:circular_include, String.t()}
           | parse_error_detail()
 
-  @amount_regex ~r/[-+]?(?:\$|[A-Z]{1,5})?\d+(?:\.\d{1,2})?/
+  @amount_regex ~r/(?:\$|[A-Z]{1,5})?\s*[-+]?\d+(?:\.\d{1,2})?(?:\s*(?:\$|[A-Z]{1,5}))?/
 
   # Basic building blocks
   whitespace = ascii_string([?\s, ?\t], min: 1)
@@ -168,7 +168,7 @@ defmodule ExLedger.LedgerParser do
   # We capture decimal part as a string to preserve leading zeros
   decimal_string = ascii_string([?0..?9], min: 1)
 
-  amount_value =
+  amount_leading_currency =
     optional(sign)
     |> concat(currency)
     |> ignore(optional_whitespace)
@@ -180,6 +180,23 @@ defmodule ExLedger.LedgerParser do
       |> concat(decimal_string |> unwrap_and_tag(:decimal_string))
     )
     |> reduce({:to_amount, []})
+
+  amount_trailing_currency =
+    optional(sign)
+    |> concat(integer(min: 1) |> unwrap_and_tag(:integer_part))
+    |> optional(
+      ignore(string("."))
+      |> concat(decimal_string |> unwrap_and_tag(:decimal_string))
+    )
+    |> ignore(optional_whitespace)
+    |> concat(currency)
+    |> reduce({:to_amount, []})
+
+  amount_value =
+    choice([
+      amount_leading_currency,
+      amount_trailing_currency
+    ])
 
   defparsec(:amount_parser, amount_value)
 
@@ -330,7 +347,13 @@ defmodule ExLedger.LedgerParser do
   defp to_amount(parts) do
     has_negative = Enum.member?(parts, :negative)
     sign = if has_negative, do: -1, else: 1
-    currency = Keyword.get(parts, :currency, "$")
+    currency =
+      parts
+      |> Enum.reverse()
+      |> Enum.find_value("$", fn
+        {:currency, curr} -> curr
+        _ -> nil
+      end)
     integer_part = Keyword.get(parts, :integer_part, 0)
 
     # Handle decimal part: convert to fractional value based on number of digits

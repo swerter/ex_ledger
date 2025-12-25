@@ -447,6 +447,20 @@ Assets:Checking
       assert posting1.comments == []
     end
 
+    test "parses transaction with trailing currency amounts" do
+      input = """
+      2024/08/01 Cash deposit
+          Assets:Cash               100.00 CHF
+          Income:Salary
+      """
+
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+
+      [posting1, posting2] = transaction.postings
+      assert posting1.amount == %{value: 100.00, currency: "CHF"}
+      assert posting2.amount == %{value: -100.00, currency: "CHF"}
+    end
+
     test "parses transaction at sign in description" do
       input = """
       2025/01/10 LUFTHANSA-GRO 131.91 EUR @0.91677
@@ -562,6 +576,15 @@ Assets:Checking
 
       assert posting.account == "Liabilities:Credit Card"
       assert posting.amount == %{value: 4.50, currency: "$"}
+    end
+
+    test "parses posting with trailing currency code" do
+      input = "    Assets:Cash               10.00 CHF"
+
+      assert {:ok, posting} = LedgerParser.parse_posting(input)
+
+      assert posting.account == "Assets:Cash"
+      assert posting.amount == %{value: 10.00, currency: "CHF"}
     end
 
     test "parses posting with different amounts" do
@@ -696,6 +719,12 @@ Assets:Checking
       assert {:ok, %{value: 4.50, currency: "$"}} = LedgerParser.parse_amount("$4.50")
       assert {:ok, %{value: 4.123, currency: "$"}} = LedgerParser.parse_amount("$4.123")
       assert {:ok, %{value: 4.12345, currency: "$"}} = LedgerParser.parse_amount("$4.12345")
+    end
+
+    test "parses amounts with trailing currency code" do
+      assert {:ok, %{value: 10.0, currency: "CHF"}} = LedgerParser.parse_amount("10 CHF")
+      assert {:ok, %{value: -10.5, currency: "USD"}} = LedgerParser.parse_amount("-10.5 USD")
+      assert {:ok, %{value: 75.0, currency: "EUR"}} = LedgerParser.parse_amount("75 EUR")
     end
 
     test "parses amounts without decimal point" do

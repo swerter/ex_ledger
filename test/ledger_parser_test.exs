@@ -102,6 +102,29 @@ Assets:Checking
       assert {:error, :insufficient_spacing} = LedgerParser.parse_transaction(input)
     end
 
+    test "requires double-space before amount when currency code is present" do
+      input = """
+      2024/01/04 Tight spacing
+          Assets:Cash CHF -10.00
+          Income:Salary
+      """
+
+      assert {:error, :insufficient_spacing} = LedgerParser.parse_transaction(input)
+    end
+
+    test "accepts double-space before amount when currency code is present" do
+      input = """
+      2024/01/04 Acceptable spacing
+          Assets:Cash  CHF -10.00
+          Income:Salary
+      """
+
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      [posting1, posting2] = transaction.postings
+      assert posting1.amount == %{value: -10.00, currency: "CHF"}
+      assert posting2.amount == %{value: 10.00, currency: "CHF"}
+    end
+
     test "accepts 2 or more spaces between account and amount" do
       input = """
       2009/11/01 Panera Bread
@@ -407,6 +430,21 @@ Assets:Checking
                "Location" => "Downtown",
                "Payment" => "Cash"
              }
+    end
+
+    test "parses posting notes with spaces after semicolon" do
+      input = """
+      2009/11/01 Panera Bread
+          ;   Type: Coffee
+          Expenses:Food               $4.50
+          Assets:Checking
+      """
+
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+
+      [posting1, _posting2] = transaction.postings
+      assert posting1.metadata == %{"Type" => "Coffee"}
+      assert posting1.comments == []
     end
 
     test "parses transaction at sign in description" do
@@ -1735,6 +1773,26 @@ Assets:Checking
       {:ok, content} = File.read(main_file)
       # Should return an error about the parse failure in the included file
       assert {:error, _} = LedgerParser.parse_ledger_with_includes(content, test_dir)
+    end
+
+    test "returns import chain when an included file fails to parse", %{test_dir: test_dir} do
+      included_file = Path.join(test_dir, "bad.ledger")
+
+      File.write!(included_file, """
+      2009/01/01
+          Assets:Checking            $100.00
+      """)
+
+      main_file = Path.join(test_dir, "main.ledger")
+
+      File.write!(main_file, """
+      include bad.ledger
+      """)
+
+      {:ok, content} = File.read(main_file)
+
+      assert {:error, %{reason: :missing_payee, line: 1, file: "bad.ledger", import_chain: [{"main.ledger", 1}]}} =
+               LedgerParser.parse_ledger_with_includes(content, test_dir, MapSet.new(), "main.ledger")
     end
   end
 

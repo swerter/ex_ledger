@@ -22,6 +22,7 @@ defmodule ExLedger.CLI do
     %{
       file: opts[:file],
       command: List.first(commands) || "balance",
+      command_args: Enum.drop(commands, 1),
       help?: opts[:help] || false,
       strict?: opts[:strict] || false,
       empty?: opts[:empty] || false
@@ -39,6 +40,136 @@ defmodule ExLedger.CLI do
   end
 
   defp execute(%{file: file, command: "balance", strict?: strict?, empty?: empty?}) do
+    with_parsed(file, fn transactions, accounts ->
+      resolved_transactions =
+        ExLedger.LedgerParser.resolve_transaction_aliases(transactions, accounts)
+
+      case maybe_validate_strict(resolved_transactions, accounts, strict?) do
+        :ok ->
+          resolved_transactions
+          |> ExLedger.LedgerParser.balance()
+          |> ExLedger.LedgerParser.format_balance(empty?)
+          |> IO.write()
+
+        {:error, {:undeclared_account, account_name}} ->
+          print_error("account '#{account_name}' is used but not declared (strict mode)")
+          System.halt(1)
+      end
+    end)
+  end
+
+  defp execute(%{file: file, command: "accounts", command_args: args}) do
+    with_parsed(file, fn transactions, accounts ->
+      resolved_transactions =
+        ExLedger.LedgerParser.resolve_transaction_aliases(transactions, accounts)
+
+      accounts_list = ExLedger.LedgerParser.list_accounts(resolved_transactions, accounts)
+
+      accounts_list
+      |> filter_list(first_arg(args))
+      |> Enum.join("\n")
+      |> Kernel.<>("\n")
+      |> IO.write()
+    end)
+  end
+
+  defp execute(%{file: file, command: "payees", command_args: args}) do
+    with_parsed(file, fn transactions, _accounts ->
+      payees = ExLedger.LedgerParser.list_payees(transactions)
+
+      payees
+      |> filter_list(first_arg(args))
+      |> Enum.join("\n")
+      |> Kernel.<>("\n")
+      |> IO.write()
+    end)
+  end
+
+  defp execute(%{file: file, command: "commodities", command_args: args}) do
+    with_parsed(file, fn transactions, _accounts ->
+      commodities = ExLedger.LedgerParser.list_commodities(transactions)
+
+      commodities
+      |> filter_list(first_arg(args))
+      |> Enum.join("\n")
+      |> Kernel.<>("\n")
+      |> IO.write()
+    end)
+  end
+
+  defp execute(%{file: file, command: "tags", command_args: args}) do
+    with_parsed(file, fn transactions, _accounts ->
+      tags = ExLedger.LedgerParser.list_tags(transactions)
+
+      tags
+      |> filter_list(first_arg(args))
+      |> Enum.join("\n")
+      |> Kernel.<>("\n")
+      |> IO.write()
+    end)
+  end
+
+  defp execute(%{file: file, command: "stats"}) do
+    with_parsed(file, fn transactions, _accounts ->
+      transactions
+      |> ExLedger.LedgerParser.stats()
+      |> ExLedger.LedgerParser.format_stats()
+      |> IO.write()
+    end)
+  end
+
+  defp execute(%{file: file, command: "select", command_args: args}) do
+    query = Enum.join(args, " ")
+
+    if query == "" do
+      print_error("select requires a query")
+      System.halt(64)
+    end
+
+    with_parsed(file, fn transactions, _accounts ->
+      case ExLedger.LedgerParser.select(transactions, query) do
+        {:ok, fields, rows} ->
+          ExLedger.LedgerParser.format_select(fields, rows)
+          |> IO.write()
+
+        {:error, reason} ->
+          print_error("invalid select query: #{reason}")
+          System.halt(64)
+      end
+    end)
+  end
+
+  defp execute(%{file: file, command: "xact", command_args: args}) do
+    case args do
+      [date_string, payee_pattern] ->
+        with_parsed(file, fn transactions, _accounts ->
+          with {:ok, date} <- LedgerParser.parse_date(date_string),
+               {:ok, output} <- LedgerParser.build_xact(transactions, date, payee_pattern) do
+            IO.write(output)
+          else
+            {:error, :invalid_date_format} ->
+              print_error("invalid date format for xact")
+              System.halt(64)
+
+            {:error, :xact_not_found} ->
+              print_error("no transaction matches xact pattern")
+              System.halt(1)
+          end
+        end)
+
+      _ ->
+        print_error("xact requires DATE and PAYEE_PATTERN")
+        System.halt(64)
+    end
+  end
+
+  defp execute(%{command: command}) do
+    print_error("unknown command #{command}")
+    print_usage()
+    System.halt(64)
+  end
+
+  defp with_parsed(file, fun) do
     base_dir = Path.dirname(file)
     filename = Path.basename(file)
 
@@ -50,15 +181,8 @@ defmodule ExLedger.CLI do
               base_dir,
               MapSet.new(),
               filename
-            )},
-         resolved_transactions =
-           ExLedger.LedgerParser.resolve_transaction_aliases(transactions, accounts),
-         {:validated, :ok} <-
-           {:validated, maybe_validate_strict(resolved_transactions, accounts, strict?)} do
-      resolved_transactions
-      |> ExLedger.LedgerParser.balance()
-      |> ExLedger.LedgerParser.format_balance(empty?)
-      |> IO.write()
+            )} do
+      fun.(transactions, accounts)
     else
       {:file_read, {:error, reason}} ->
         print_error("cannot read file #{file}: #{:file.format_error(reason)}")
@@ -66,17 +190,7 @@ defmodule ExLedger.CLI do
 
       {:parsed, {:error, error}} ->
         handle_parse_error(error, file)
-
-      {:validated, {:error, {:undeclared_account, account_name}}} ->
-        print_error("account '#{account_name}' is used but not declared (strict mode)")
-        System.halt(1)
     end
-  end
-
-  defp execute(%{command: command}) do
-    print_error("unknown command #{command}")
-    print_usage()
-    System.halt(64)
   end
 
   defp maybe_validate_strict(_transactions, _accounts, false), do: :ok
@@ -107,13 +221,23 @@ defmodule ExLedger.CLI do
 
   defp print_usage do
     [
-      "Usage: exledger -f <ledger_file> balance",
+      "Usage: exledger -f <ledger_file> <command> [args]",
       "",
       "Options:",
       "  -f, --file    Path to the ledger file",
       "  -h, --help    Show this message",
       "  -E, --empty   Show accounts whose total is zero",
-      "  --strict      Require all accounts to be declared"
+      "  --strict      Require all accounts to be declared",
+      "",
+      "Commands:",
+      "  balance            Show account balances",
+      "  accounts [REGEX]   List accounts",
+      "  payees [REGEX]     List payees",
+      "  commodities [REGEX] List commodities",
+      "  tags [REGEX]       List tags",
+      "  stats              Show journal stats",
+      "  xact DATE REGEX    Generate a transaction template",
+      "  select QUERY       Run a simple select query"
     ]
     |> Enum.join("\n")
     |> IO.puts()
@@ -139,6 +263,19 @@ defmodule ExLedger.CLI do
 
   defp format_parse_error(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_parse_error(reason), do: inspect(reason)
+
+  defp first_arg([arg | _]), do: arg
+  defp first_arg(_), do: nil
+
+  defp filter_list(items, nil), do: items
+
+  defp filter_list(items, pattern) do
+    with {:ok, regex} <- Regex.compile(pattern) do
+      Enum.filter(items, fn item -> Regex.match?(regex, item) end)
+    else
+      _ -> items
+    end
+  end
 
   @spec handle_parse_error(LedgerParser.ledger_error(), String.t()) :: no_return()
   defp handle_parse_error(%{reason: reason, line: line, file: source_file, import_chain: import_chain}, fallback_file) do

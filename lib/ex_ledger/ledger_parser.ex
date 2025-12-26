@@ -1441,6 +1441,347 @@ defmodule ExLedger.LedgerParser do
     |> Enum.reverse()
   end
 
+  @spec list_accounts([transaction()], %{String.t() => atom() | String.t()}) :: [String.t()]
+  def list_accounts(transactions, account_map \\ %{}) do
+    transaction_accounts =
+      transactions
+      |> Enum.flat_map(fn transaction -> Enum.map(transaction.postings, & &1.account) end)
+
+    declared_accounts =
+      account_map
+      |> Enum.filter(fn {_name, value} -> is_atom(value) end)
+      |> Enum.map(fn {name, _type} -> name end)
+
+    (transaction_accounts ++ declared_accounts)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  @spec list_payees([transaction()]) :: [String.t()]
+  def list_payees(transactions) do
+    transactions
+    |> Enum.map(& &1.payee)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  @spec list_commodities([transaction()]) :: [String.t()]
+  def list_commodities(transactions) do
+    transactions
+    |> Enum.flat_map(fn transaction ->
+      Enum.flat_map(transaction.postings, fn posting ->
+        case posting.amount do
+          nil -> []
+          %{currency: currency} -> [currency]
+        end
+      end)
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  @spec list_tags([transaction()]) :: [String.t()]
+  def list_tags(transactions) do
+    transactions
+    |> Enum.flat_map(fn transaction ->
+      Enum.flat_map(transaction.postings, & &1.tags)
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  @spec stats([transaction()]) :: map()
+  def stats(transactions) do
+    postings =
+      Enum.flat_map(transactions, fn transaction ->
+        Enum.map(transaction.postings, fn posting ->
+          %{date: transaction.date, account: posting.account}
+        end)
+      end)
+
+    dates = Enum.map(transactions, & &1.date)
+    {start_date, end_date} = min_max_dates(dates)
+    today = Date.utc_today()
+
+    %{
+      time_range: {start_date, end_date},
+      unique_accounts: list_accounts(transactions, %{}) |> length(),
+      unique_payees: list_payees(transactions) |> length(),
+      postings_total: length(postings),
+      days_since_last_posting: days_since(end_date, today),
+      posts_last_7_days: count_posts_since(postings, today, 7),
+      posts_last_30_days: count_posts_since(postings, today, 30),
+      posts_this_month: count_posts_this_month(postings, today)
+    }
+  end
+
+  @spec format_stats(map()) :: String.t()
+  def format_stats(stats) do
+    {start_date, end_date} = stats.time_range
+    time_range = format_time_range(start_date, end_date)
+    days_since = format_days_since(stats.days_since_last_posting)
+
+    [
+      "Time range of all postings: #{time_range}",
+      "Unique accounts: #{stats.unique_accounts}",
+      "Unique payees: #{stats.unique_payees}",
+      "Postings total: #{stats.postings_total}",
+      "Days since last posting: #{days_since}",
+      "Posts in the last 7 days: #{stats.posts_last_7_days}",
+      "Posts in the last 30 days: #{stats.posts_last_30_days}",
+      "Posts this month: #{stats.posts_this_month}"
+    ]
+    |> Enum.join("\n")
+    |> Kernel.<>("\n")
+  end
+
+  @spec select([transaction()], String.t()) :: {:ok, [String.t()], [map()]} | {:error, atom()}
+  def select(transactions, query) when is_binary(query) do
+    with {:ok, fields, filters} <- parse_select_query(query) do
+      postings =
+        Enum.flat_map(transactions, fn transaction ->
+          Enum.map(transaction.postings, fn posting ->
+            %{
+              date: transaction.date,
+              payee: transaction.payee,
+              account: posting.account,
+              amount: posting.amount,
+              tags: posting.tags
+            }
+          end)
+        end)
+
+      rows =
+        postings
+        |> Enum.filter(&matches_filters?(&1, filters))
+        |> Enum.map(&select_row(&1, fields))
+
+      {:ok, fields, rows}
+    end
+  end
+
+  @spec format_select([String.t()], [map()]) :: String.t()
+  def format_select(fields, rows) do
+    rows
+    |> Enum.map(&format_select_row(&1, fields))
+    |> Enum.join("\n")
+    |> Kernel.<>("\n")
+  end
+
+  @spec build_xact([transaction()], Date.t(), String.t()) :: {:ok, String.t()} | {:error, atom()}
+  def build_xact(transactions, date, payee_pattern) do
+    with {:ok, regex} <- compile_regex(payee_pattern) do
+      transaction =
+        transactions
+        |> Enum.reverse()
+        |> Enum.find(&Regex.match?(regex, &1.payee))
+
+      case transaction do
+        nil -> {:error, :xact_not_found}
+        _ -> {:ok, format_transaction(transaction, date)}
+      end
+    end
+  end
+
+  defp format_transaction(transaction, date) do
+    header = build_transaction_header(transaction, date)
+
+    postings =
+      Enum.map(transaction.postings, fn posting ->
+        amount = format_posting_amount(posting.amount)
+        if amount == "" do
+          "    #{posting.account}"
+        else
+          "    #{posting.account}  #{amount}"
+        end
+      end)
+
+    Enum.join([header | postings], "\n") <> "\n"
+  end
+
+  defp build_transaction_header(transaction, date) do
+    date_string = Calendar.strftime(date, "%Y/%m/%d")
+    code_segment = if transaction.code == "", do: "", else: " (#{transaction.code})"
+    comment_segment = if transaction.comment, do: "  ; #{transaction.comment}", else: ""
+    "#{date_string}#{code_segment} #{transaction.payee}#{comment_segment}"
+  end
+
+  defp format_posting_amount(nil), do: ""
+
+  defp format_posting_amount(%{value: value, currency: currency}) do
+    format_amount_for_currency(value, currency)
+  end
+
+  defp min_max_dates([]), do: {nil, nil}
+
+  defp min_max_dates(dates) do
+    {Enum.min(dates), Enum.max(dates)}
+  end
+
+  defp days_since(nil, _today), do: "N/A"
+  defp days_since(end_date, today), do: Date.diff(today, end_date)
+
+  defp count_posts_since(postings, today, days) do
+    cutoff = Date.add(today, -days)
+    Enum.count(postings, fn posting -> Date.compare(posting.date, cutoff) != :lt end)
+  end
+
+  defp count_posts_this_month(postings, today) do
+    Enum.count(postings, fn posting ->
+      posting.date.year == today.year and posting.date.month == today.month
+    end)
+  end
+
+  defp format_time_range(nil, nil), do: "N/A"
+
+  defp format_time_range(start_date, end_date) do
+    start_string = Calendar.strftime(start_date, "%Y-%m-%d")
+    end_string = Calendar.strftime(end_date, "%Y-%m-%d")
+    "#{start_string} to #{end_string}"
+  end
+
+  defp format_days_since(days) when is_integer(days), do: Integer.to_string(days)
+  defp format_days_since(value), do: value
+
+  defp select_row(posting, fields) do
+    Enum.reduce(fields, %{}, fn field, acc ->
+      Map.put(acc, field, select_value(posting, field))
+    end)
+  end
+
+  defp select_value(posting, "date"), do: posting.date
+  defp select_value(posting, "payee"), do: posting.payee
+  defp select_value(posting, "account"), do: posting.account
+
+  defp select_value(posting, "amount") do
+    case posting.amount do
+      nil -> nil
+      %{value: value, currency: currency} -> format_amount_for_currency(value, currency)
+    end
+  end
+
+  defp select_value(posting, "commodity") do
+    case posting.amount do
+      nil -> nil
+      %{currency: currency} -> currency
+    end
+  end
+
+  defp select_value(posting, "quantity") do
+    case posting.amount do
+      nil -> nil
+      %{value: value} -> value
+    end
+  end
+
+  defp select_value(_posting, _field), do: nil
+
+  defp format_select_row(row, fields) do
+    fields
+    |> Enum.map(fn field ->
+      value = Map.get(row, field)
+      format_select_value(value)
+    end)
+    |> Enum.join("\t")
+  end
+
+  defp format_select_value(%Date{} = value), do: Calendar.strftime(value, "%Y-%m-%d")
+  defp format_select_value(nil), do: ""
+  defp format_select_value(value), do: to_string(value)
+
+  defp matches_filters?(posting, filters) do
+    Enum.all?(filters, fn {field, regex} ->
+      value = select_filter_value(posting, field)
+      value != nil and Regex.match?(regex, value)
+    end)
+  end
+
+  defp select_filter_value(posting, "account"), do: posting.account
+  defp select_filter_value(posting, "payee"), do: posting.payee
+
+  defp select_filter_value(posting, "tag") do
+    posting.tags
+    |> Enum.join(",")
+  end
+
+  defp select_filter_value(posting, "commodity") do
+    case posting.amount do
+      nil -> nil
+      %{currency: currency} -> currency
+    end
+  end
+
+  defp select_filter_value(_posting, _field), do: nil
+
+  defp parse_select_query(query) do
+    query = String.trim(query)
+
+    with [fields_part, where_part] <- split_select_parts(query),
+         fields when fields != [] <- parse_select_fields(fields_part),
+         {:ok, filters} <- parse_select_filters(where_part) do
+      {:ok, fields, filters}
+    else
+      _ -> {:error, :invalid_select_query}
+    end
+  end
+
+  defp split_select_parts(query) do
+    case Regex.run(~r/^(.+?)\s+from\s+posts(?:\s+where\s+(.+))?$/i, query) do
+      [_, fields] -> [fields, nil]
+      [_, fields, where] -> [fields, where]
+      _ -> :error
+    end
+  end
+
+  defp parse_select_fields(fields_part) when is_binary(fields_part) do
+    fields_part
+    |> String.split(",")
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp parse_select_filters(nil), do: {:ok, []}
+
+  defp parse_select_filters(where_part) do
+    conditions =
+      where_part
+      |> String.split(~r/\s+and\s+/i)
+      |> Enum.map(&String.trim/1)
+
+    Enum.reduce_while(conditions, {:ok, []}, fn condition, {:ok, acc} ->
+      case parse_filter(condition) do
+        {:ok, filter} -> {:cont, {:ok, [filter | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, filters} -> {:ok, Enum.reverse(filters)}
+      error -> error
+    end
+  end
+
+  defp parse_filter(condition) do
+    case Regex.run(~r/^(account|payee|tag|commodity)=~\/(.+)\/$/i, condition) do
+      [_, field, regex_source] ->
+        field = String.downcase(field)
+
+        case compile_regex(regex_source) do
+          {:ok, regex} -> {:ok, {field, regex}}
+          {:error, _} -> {:error, :invalid_select_filter}
+        end
+
+      _ ->
+        {:error, :invalid_select_filter}
+    end
+  end
+
+  defp compile_regex(source) do
+    case Regex.compile(source) do
+      {:ok, regex} -> {:ok, regex}
+      {:error, _} -> {:error, :invalid_regex}
+    end
+  end
+
   @doc """
   Formats account postings as a register report.
   """

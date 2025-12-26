@@ -2185,4 +2185,114 @@ defmodule ExLedger.LedgerParserTest do
       end
     end
   end
+
+  describe "journal report helpers" do
+    setup do
+      transactions = [
+        %{
+          date: ~D[2024-01-01],
+          aux_date: nil,
+          state: :uncleared,
+          code: "",
+          payee: "Coffee Shop",
+          comment: nil,
+          postings: [
+            %{
+              account: "Expenses:Food",
+              amount: %{value: 5.0, currency: "$"},
+              metadata: %{},
+              tags: ["meal"],
+              comments: []
+            },
+            %{
+              account: "Assets:Cash",
+              amount: %{value: -5.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            }
+          ]
+        },
+        %{
+          date: ~D[2024-01-10],
+          aux_date: nil,
+          state: :uncleared,
+          code: "PAY",
+          payee: "Employer",
+          comment: nil,
+          postings: [
+            %{
+              account: "Assets:Cash",
+              amount: %{value: 1200.0, currency: "EUR"},
+              metadata: %{},
+              tags: ["salary"],
+              comments: []
+            },
+            %{
+              account: "Income:Salary",
+              amount: %{value: -1200.0, currency: "EUR"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            }
+          ]
+        }
+      ]
+
+      accounts = %{
+        "Assets:Cash" => :asset,
+        "Expenses:Food" => :expense,
+        "Income:Salary" => :revenue,
+        "Assets:Checking" => :asset
+      }
+
+      {:ok, transactions: transactions, accounts: accounts}
+    end
+
+    test "lists accounts including declarations", %{transactions: transactions, accounts: accounts} do
+      result = LedgerParser.list_accounts(transactions, accounts)
+
+      assert result == [
+               "Assets:Cash",
+               "Assets:Checking",
+               "Expenses:Food",
+               "Income:Salary"
+             ]
+    end
+
+    test "lists payees", %{transactions: transactions} do
+      assert LedgerParser.list_payees(transactions) == ["Coffee Shop", "Employer"]
+    end
+
+    test "lists commodities", %{transactions: transactions} do
+      assert LedgerParser.list_commodities(transactions) == ["$", "EUR"]
+    end
+
+    test "lists tags", %{transactions: transactions} do
+      assert LedgerParser.list_tags(transactions) == ["meal", "salary"]
+    end
+
+    test "builds stats summary", %{transactions: transactions} do
+      stats = LedgerParser.stats(transactions)
+
+      assert stats.time_range == {~D[2024-01-01], ~D[2024-01-10]}
+      assert stats.unique_accounts == 3
+      assert stats.unique_payees == 2
+      assert stats.postings_total == 4
+    end
+
+    test "runs select query", %{transactions: transactions} do
+      query = "date,payee,account,amount from posts where account=~/Expenses/"
+
+      assert {:ok, fields, rows} = LedgerParser.select(transactions, query)
+      assert fields == ["date", "payee", "account", "amount"]
+      assert length(rows) == 1
+      assert Enum.at(rows, 0).account == "Expenses:Food"
+    end
+
+    test "builds xact output", %{transactions: transactions} do
+      assert {:ok, output} = LedgerParser.build_xact(transactions, ~D[2024-02-01], "Coffee")
+      assert String.starts_with?(output, "2024/02/01 Coffee Shop")
+    end
+  end
 end

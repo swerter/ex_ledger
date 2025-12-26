@@ -9,6 +9,14 @@ defmodule ExLedger.LedgerParser do
           ACCOUNT  AMOUNT
           ACCOUNT  [AMOUNT]
 
+  Automated and periodic transactions are also supported:
+
+      = EXPR
+          ACCOUNT  AMOUNT
+
+      ~ PERIOD
+          ACCOUNT  AMOUNT
+
   Where:
   - Notes can be comments, key-value metadata (Key: Value), or tags (:TagName:)
   - At least 2 spaces required between account name and amount
@@ -29,12 +37,15 @@ defmodule ExLedger.LedgerParser do
           comments: [String.t()]
         }
   @type transaction :: %{
-          date: Date.t(),
+          kind: :regular | :automated | :periodic,
+          date: Date.t() | nil,
           aux_date: Date.t() | nil,
           state: :cleared | :pending | :uncleared,
           code: String.t(),
-          payee: String.t(),
+          payee: String.t() | nil,
           comment: String.t() | nil,
+          predicate: String.t() | nil,
+          period: String.t() | nil,
           postings: [posting()]
         }
   @type account_declaration :: %{
@@ -46,6 +57,8 @@ defmodule ExLedger.LedgerParser do
   @type parse_error ::
           :missing_date
           | :missing_payee
+          | :missing_predicate
+          | :missing_period
           | :invalid_indentation
           | :insufficient_postings
           | :insufficient_spacing
@@ -164,6 +177,24 @@ defmodule ExLedger.LedgerParser do
     |> concat(payee)
     |> ignore(optional_whitespace)
     |> optional(transaction_comment)
+    |> ignore(string("\n"))
+
+  automated_header =
+    ignore(optional_whitespace)
+    |> ignore(string("="))
+    |> ignore(optional_whitespace)
+    |> utf8_string([not: ?\n], min: 1)
+    |> reduce({:trim_string, []})
+    |> unwrap_and_tag(:predicate)
+    |> ignore(string("\n"))
+
+  periodic_header =
+    ignore(optional_whitespace)
+    |> ignore(string("~"))
+    |> ignore(optional_whitespace)
+    |> utf8_string([not: ?\n], min: 1)
+    |> reduce({:trim_string, []})
+    |> unwrap_and_tag(:period)
     |> ignore(string("\n"))
 
   # Negative sign indicator (allowed before or after currency)
@@ -308,6 +339,20 @@ defmodule ExLedger.LedgerParser do
     :transaction_parser,
     transaction_header
     |> times(posting, min: 2)
+    |> reduce({:build_transaction, []})
+  )
+
+  defparsec(
+    :automated_transaction_parser,
+    automated_header
+    |> times(posting, min: 1)
+    |> reduce({:build_transaction, []})
+  )
+
+  defparsec(
+    :periodic_transaction_parser,
+    periodic_header
+    |> times(posting, min: 1)
     |> reduce({:build_transaction, []})
   )
 
@@ -520,21 +565,44 @@ defmodule ExLedger.LedgerParser do
 
   @spec build_transaction(list()) :: transaction()
   defp build_transaction(parts) do
-    parts
-    |> Enum.reduce(
-      %{date: nil, aux_date: nil, state: :uncleared, code: "", payee: nil, comment: nil, postings: []},
-      fn
-        {:date, date}, acc -> %{acc | date: date}
-        {:aux_date, aux_date}, acc -> %{acc | aux_date: aux_date}
-        {:state, state}, acc -> %{acc | state: state}
-        {:code, code}, acc -> %{acc | code: code}
-        {:payee, payee}, acc -> %{acc | payee: payee}
-        {:comment, comment}, acc -> %{acc | comment: comment}
-        posting, acc when is_map(posting) -> Map.update!(acc, :postings, &[posting | &1])
-        _, acc -> acc
+    transaction =
+      parts
+      |> Enum.reduce(
+        %{
+          kind: :regular,
+          date: nil,
+          aux_date: nil,
+          state: :uncleared,
+          code: "",
+          payee: nil,
+          comment: nil,
+          predicate: nil,
+          period: nil,
+          postings: []
+        },
+        fn
+          {:date, date}, acc -> %{acc | date: date}
+          {:aux_date, aux_date}, acc -> %{acc | aux_date: aux_date}
+          {:state, state}, acc -> %{acc | state: state}
+          {:code, code}, acc -> %{acc | code: code}
+          {:payee, payee}, acc -> %{acc | payee: payee}
+          {:comment, comment}, acc -> %{acc | comment: comment}
+          {:predicate, predicate}, acc -> %{acc | predicate: predicate}
+          {:period, period}, acc -> %{acc | period: period}
+          posting, acc when is_map(posting) -> Map.update!(acc, :postings, &[posting | &1])
+          _, acc -> acc
+        end
+      )
+      |> Map.update!(:postings, &Enum.reverse/1)
+
+    kind =
+      cond do
+        transaction.predicate != nil -> :automated
+        transaction.period != nil -> :periodic
+        true -> :regular
       end
-    )
-    |> Map.update!(:postings, &Enum.reverse/1)
+
+    %{transaction | kind: kind}
   end
 
   # Public API
@@ -548,7 +616,7 @@ defmodule ExLedger.LedgerParser do
   def parse_transaction(input) do
     # Quick pre-checks for better error messages
     with :ok <- check_basic_structure(input) do
-      case transaction_parser(input) do
+      case select_transaction_parser(input).(input) do
         {:ok, [transaction], "", _, _, _} ->
           transaction = balance_postings(transaction)
 
@@ -570,25 +638,38 @@ defmodule ExLedger.LedgerParser do
   defp check_basic_structure(input) do
     lines = String.split(input, "\n")
     first_line = Enum.at(lines, 0, "")
+    trimmed_first = String.trim_leading(first_line)
+    min_postings = if starts_with_directive?(trimmed_first), do: 1, else: 2
 
     cond do
+      starts_with_automated?(trimmed_first) and String.trim(trimmed_first) == "=" ->
+        {:error, :missing_predicate}
+
+      starts_with_periodic?(trimmed_first) and String.trim(trimmed_first) == "~" ->
+        {:error, :missing_period}
+
+      starts_with_directive?(trimmed_first) and count_postings(lines) < min_postings ->
+        {:error, :insufficient_postings}
+
       # Check for date at start (supports both / and - separators)
-      not Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}/, first_line) ->
+      not starts_with_directive?(trimmed_first) and
+          not Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}/, first_line) ->
         {:error, :missing_date}
 
       # Check for payee (something after date, optional aux date, state, and code)
-      not Regex.match?(
-        ~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}(?:=\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})?\s+(?:[*!]\s+)?(?:\([^)]+\)\s+)?(.+)/,
-        first_line
-      ) ->
+      not starts_with_directive?(trimmed_first) and
+          not Regex.match?(
+            ~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}(?:=\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})?\s+(?:[*!]\s+)?(?:\([^)]+\)\s+)?(.+)/,
+            first_line
+          ) ->
         {:error, :missing_payee}
 
       # Check indentation BEFORE checking postings count (invalid indentation might look like no postings)
       has_invalid_indentation?(lines) ->
         {:error, :invalid_indentation}
 
-      # Check minimum postings (at least 2 indented lines that aren't just comments)
-      count_postings(lines) < 2 ->
+      # Check minimum postings
+      count_postings(lines) < min_postings ->
         {:error, :insufficient_postings}
 
       # Check spacing before amounts
@@ -597,6 +678,16 @@ defmodule ExLedger.LedgerParser do
 
       true ->
         :ok
+    end
+  end
+
+  defp select_transaction_parser(input) do
+    trimmed = String.trim_leading(input)
+
+    cond do
+      String.starts_with?(trimmed, "=") -> &automated_transaction_parser/1
+      String.starts_with?(trimmed, "~") -> &periodic_transaction_parser/1
+      true -> &transaction_parser/1
     end
   end
 
@@ -1193,6 +1284,22 @@ defmodule ExLedger.LedgerParser do
     Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}/, line)
   end
 
+  defp starts_with_directive?(line) do
+    starts_with_automated?(line) or starts_with_periodic?(line)
+  end
+
+  defp starts_with_automated?(line) do
+    String.starts_with?(line, "=")
+  end
+
+  defp starts_with_periodic?(line) do
+    String.starts_with?(line, "~")
+  end
+
+  defp starts_new_entry?(line) do
+    starts_with_date?(line) or starts_with_directive?(String.trim_leading(line))
+  end
+
   defp skippable_line?(trimmed, current_lines) do
     current_lines == [] and
       (String.starts_with?(trimmed, ";") or
@@ -1203,7 +1310,7 @@ defmodule ExLedger.LedgerParser do
   defp handle_regular_line(line, index, chunks, current_lines, start_line) do
     # Check if this line starts a new transaction (begins with a date)
     # and we already have lines accumulated (meaning we're in the middle of parsing a transaction)
-    if starts_with_date?(line) and current_lines != [] do
+    if starts_new_entry?(line) and current_lines != [] do
       # Finish the current transaction and start a new one
       chunk = Enum.reverse(current_lines) |> Enum.join("\n")
       {[{chunk, start_line} | chunks], [line], index, false}
@@ -1420,6 +1527,7 @@ defmodule ExLedger.LedgerParser do
   @spec get_account_postings([transaction()], String.t()) :: [map()]
   def get_account_postings(transactions, account_name) do
     transactions
+    |> Enum.filter(&regular_transaction?/1)
     |> Enum.flat_map(fn transaction ->
       transaction.postings
       |> Enum.filter(fn posting -> posting.account == account_name end)
@@ -1461,6 +1569,7 @@ defmodule ExLedger.LedgerParser do
   def list_payees(transactions) do
     transactions
     |> Enum.map(& &1.payee)
+    |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
     |> Enum.sort()
   end
@@ -1492,6 +1601,8 @@ defmodule ExLedger.LedgerParser do
 
   @spec stats([transaction()]) :: map()
   def stats(transactions) do
+    transactions = Enum.filter(transactions, &regular_transaction?/1)
+
     postings =
       Enum.flat_map(transactions, fn transaction ->
         Enum.map(transaction.postings, fn posting ->
@@ -1573,8 +1684,11 @@ defmodule ExLedger.LedgerParser do
     with {:ok, regex} <- compile_regex(payee_pattern) do
       transaction =
         transactions
+        |> Enum.filter(&regular_transaction?/1)
         |> Enum.reverse()
-        |> Enum.find(&Regex.match?(regex, &1.payee))
+        |> Enum.find(fn transaction ->
+          transaction.payee != nil and Regex.match?(regex, transaction.payee)
+        end)
 
       case transaction do
         nil -> {:error, :xact_not_found}
@@ -1610,6 +1724,10 @@ defmodule ExLedger.LedgerParser do
 
   defp format_posting_amount(%{value: value, currency: currency}) do
     format_amount_for_currency(value, currency)
+  end
+
+  defp regular_transaction?(transaction) do
+    Map.get(transaction, :kind, :regular) == :regular and not is_nil(transaction.date)
   end
 
   defp min_max_dates([]), do: {nil, nil}
@@ -1881,6 +1999,7 @@ defmodule ExLedger.LedgerParser do
 
   def balance(transactions) when is_list(transactions) do
     transactions
+    |> Enum.filter(&regular_transaction?/1)
     |> Enum.flat_map(fn transaction -> transaction.postings end)
     |> Enum.group_by(fn posting -> posting.account end)
     |> Enum.map(fn {account, postings} ->

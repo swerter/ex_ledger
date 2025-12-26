@@ -326,6 +326,32 @@ defmodule ExLedger.LedgerParserTest do
       assert transaction.payee == "Lunch meeting"
     end
 
+    test "parses automated transaction" do
+      input = """
+      = expr true
+          Assets:Cash               $5.00
+          Income:Misc
+      """
+
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      assert transaction.kind == :automated
+      assert transaction.predicate == "expr true"
+      assert length(transaction.postings) == 2
+    end
+
+    test "parses periodic transaction" do
+      input = """
+      ~ Monthly
+          Expenses:Rent             $500.00
+          Assets:Checking
+      """
+
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      assert transaction.kind == :periodic
+      assert transaction.period == "Monthly"
+      assert length(transaction.postings) == 2
+    end
+
     test "parses transaction without code" do
       input = """
       2009/10/29 Panera Bread

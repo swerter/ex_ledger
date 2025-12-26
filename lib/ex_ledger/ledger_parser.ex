@@ -4,7 +4,7 @@ defmodule ExLedger.LedgerParser do
 
   Parses transactions in the format:
 
-      YYYY/MM/DD [(CODE)] PAYEE  [; COMMENT]
+      YYYY/MM/DD[=YYYY/MM/DD] [*|!] [(CODE)] PAYEE  [; COMMENT]
           [; NOTES/METADATA/TAGS]
           ACCOUNT  AMOUNT
           ACCOUNT  [AMOUNT]
@@ -30,6 +30,8 @@ defmodule ExLedger.LedgerParser do
         }
   @type transaction :: %{
           date: Date.t(),
+          aux_date: Date.t() | nil,
+          state: :cleared | :pending | :uncleared,
           code: String.t(),
           payee: String.t(),
           comment: String.t() | nil,
@@ -107,14 +109,19 @@ defmodule ExLedger.LedgerParser do
   day = integer(min: 1, max: 2)
   date_separator = choice([string("/"), string("-")])
 
-  date =
+  date_value =
     year
     |> ignore(date_separator)
     |> concat(month)
     |> ignore(date_separator)
     |> concat(day)
     |> reduce({:to_date, []})
-    |> unwrap_and_tag(:date)
+
+  date = date_value |> unwrap_and_tag(:date)
+
+  aux_date =
+    ignore(string("="))
+    |> concat(date_value |> unwrap_and_tag(:aux_date))
 
   defparsec(:date_parser, date)
 
@@ -139,10 +146,20 @@ defmodule ExLedger.LedgerParser do
     |> unwrap_and_tag(:comment)
     |> optional()
 
+  # Transaction state flag
+  state_flag =
+    choice([
+      string("*") |> replace(:cleared),
+      string("!") |> replace(:pending)
+    ])
+    |> unwrap_and_tag(:state)
+
   # Transaction header line
   transaction_header =
     date
+    |> optional(aux_date)
     |> ignore(whitespace)
+    |> optional(state_flag |> ignore(whitespace))
     |> optional(code |> ignore(whitespace))
     |> concat(payee)
     |> ignore(optional_whitespace)
@@ -168,13 +185,25 @@ defmodule ExLedger.LedgerParser do
   # We capture decimal part as a string to preserve leading zeros
   decimal_string = ascii_string([?0..?9], min: 1)
 
+  three_digits =
+    ascii_char([?0..?9])
+    |> concat(ascii_char([?0..?9]))
+    |> concat(ascii_char([?0..?9]))
+    |> reduce({:chars_to_string, []})
+
+  integer_with_commas =
+    ascii_string([?0..?9], min: 1)
+    |> repeat(ignore(string(",")) |> concat(three_digits))
+    |> reduce({:flatten_integer_parts, []})
+    |> unwrap_and_tag(:integer_part)
+
   amount_leading_currency =
     optional(sign)
     |> concat(currency)
     |> ignore(optional_whitespace)
     |> optional(sign)
     |> ignore(optional_whitespace)
-    |> concat(integer(min: 1) |> unwrap_and_tag(:integer_part))
+    |> concat(integer_with_commas)
     |> optional(
       ignore(string("."))
       |> concat(decimal_string |> unwrap_and_tag(:decimal_string))
@@ -183,7 +212,7 @@ defmodule ExLedger.LedgerParser do
 
   amount_trailing_currency =
     optional(sign)
-    |> concat(integer(min: 1) |> unwrap_and_tag(:integer_part))
+    |> concat(integer_with_commas)
     |> optional(
       ignore(string("."))
       |> concat(decimal_string |> unwrap_and_tag(:decimal_string))
@@ -343,6 +372,19 @@ defmodule ExLedger.LedgerParser do
     String.trim(str)
   end
 
+  @spec chars_to_string([integer()]) :: String.t()
+  defp chars_to_string(chars) do
+    chars
+    |> List.to_string()
+  end
+
+  @spec flatten_integer_parts([String.t()]) :: integer()
+  defp flatten_integer_parts([first | rest]) do
+    [first | rest]
+    |> Enum.join()
+    |> String.to_integer()
+  end
+
   @spec to_amount(keyword()) :: amount()
   defp to_amount(parts) do
     has_negative = Enum.member?(parts, :negative)
@@ -480,9 +522,11 @@ defmodule ExLedger.LedgerParser do
   defp build_transaction(parts) do
     parts
     |> Enum.reduce(
-      %{date: nil, code: "", payee: nil, comment: nil, postings: []},
+      %{date: nil, aux_date: nil, state: :uncleared, code: "", payee: nil, comment: nil, postings: []},
       fn
         {:date, date}, acc -> %{acc | date: date}
+        {:aux_date, aux_date}, acc -> %{acc | aux_date: aux_date}
+        {:state, state}, acc -> %{acc | state: state}
         {:code, code}, acc -> %{acc | code: code}
         {:payee, payee}, acc -> %{acc | payee: payee}
         {:comment, comment}, acc -> %{acc | comment: comment}
@@ -532,8 +576,11 @@ defmodule ExLedger.LedgerParser do
       not Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}/, first_line) ->
         {:error, :missing_date}
 
-      # Check for payee (something after date and optional code)
-      not Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}\s+(?:\([^)]+\)\s+)?(.+)/, first_line) ->
+      # Check for payee (something after date, optional aux date, state, and code)
+      not Regex.match?(
+        ~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}(?:=\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})?\s+(?:[*!]\s+)?(?:\([^)]+\)\s+)?(.+)/,
+        first_line
+      ) ->
         {:error, :missing_payee}
 
       # Check indentation BEFORE checking postings count (invalid indentation might look like no postings)

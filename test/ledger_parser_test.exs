@@ -294,6 +294,38 @@ defmodule ExLedger.LedgerParserTest do
       assert posting2.amount == %{value: -4.50, currency: "$"}
     end
 
+    test "parses transaction with auxiliary date and cleared state" do
+      input = """
+      2009/10/29=2009/10/28 * (XFER) Panera Bread
+          Expenses:Food               $4.50
+          Assets:Checking
+      """
+
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+
+      assert transaction.date == ~D[2009-10-29]
+      assert transaction.aux_date == ~D[2009-10-28]
+      assert transaction.state == :cleared
+      assert transaction.code == "XFER"
+      assert transaction.payee == "Panera Bread"
+    end
+
+    test "parses transaction with pending state and no code" do
+      input = """
+      2009/10/29 ! Lunch meeting
+          Expenses:Food               $12.00
+          Assets:Checking
+      """
+
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+
+      assert transaction.date == ~D[2009-10-29]
+      assert transaction.aux_date == nil
+      assert transaction.state == :pending
+      assert transaction.code == ""
+      assert transaction.payee == "Lunch meeting"
+    end
+
     test "parses transaction without code" do
       input = """
       2009/10/29 Panera Bread
@@ -2052,6 +2084,105 @@ defmodule ExLedger.LedgerParserTest do
       File.write!(path, "not a ledger file")
 
       refute LedgerParser.check_file(path)
+    end
+  end
+
+  describe "parse_ledger/2 - bookings.ledger format" do
+    test "parses single transaction WITHOUT comma separators (works)" do
+      # Test without commas - this should work
+      input = """
+      2024/01/01 Opening Balance
+          Assets:Checking              $5000.00
+          Assets:Savings               $10000.00
+          Equity:OpeningBalances
+      """
+
+      result = LedgerParser.parse_transaction(input)
+
+      case result do
+        {:ok, transaction} ->
+          assert transaction.date == ~D[2024-01-01]
+          assert transaction.payee == "Opening Balance"
+          assert length(transaction.postings) == 3
+
+          # Check auto-balanced posting
+          equity_posting = Enum.find(transaction.postings, fn p -> p.account == "Equity:OpeningBalances" end)
+          assert equity_posting.amount == %{value: -15000.00, currency: "$"}
+
+        {:error, reason} ->
+          flunk("Expected successful parse but got error: #{inspect(reason)}")
+      end
+    end
+
+    test "parses single transaction WITH comma separators (currently fails)" do
+      # Test WITH commas - this reproduces the bookings.ledger bug
+      input = """
+      2024/01/01 Opening Balance
+          Assets:Checking              $5,000.00
+          Assets:Savings               $10,000.00
+          Equity:OpeningBalances
+      """
+
+      result = LedgerParser.parse_transaction(input)
+
+      case result do
+        {:ok, transaction} ->
+          assert transaction.date == ~D[2024-01-01]
+          assert transaction.payee == "Opening Balance"
+          assert length(transaction.postings) == 3
+
+          # Check auto-balanced posting
+          equity_posting = Enum.find(transaction.postings, fn p -> p.account == "Equity:OpeningBalances" end)
+          assert equity_posting.amount == %{value: -15000.00, currency: "$"}
+
+        {:error, reason} ->
+          flunk("Expected successful parse but got error: #{inspect(reason)}")
+      end
+    end
+
+    test "parses bookings.ledger with auto-balanced postings" do
+      # This is the format used in accountguru's bookings.ledger files
+      input = """
+      2024/01/01 Opening Balance
+          Assets:Checking              $5,000.00
+          Assets:Savings               $10,000.00
+          Equity:OpeningBalances
+
+      2024/01/05 Salary
+          Assets:Checking              $4,500.00
+          Income:Salary
+
+      2024/01/10 Rent Payment
+          Expenses:Rent                $1,200.00
+          Assets:Checking
+
+      2024/01/15 Credit Card Purchase
+          Expenses:Rent                $100.00
+          Liabilities:CreditCard
+      """
+
+      result = LedgerParser.parse_ledger(input, "bookings.ledger")
+
+      case result do
+        {:ok, transactions} ->
+          assert length(transactions) == 4
+
+          # Check first transaction
+          [t1, _t2, _t3, _t4] = transactions
+          assert t1.date == ~D[2024-01-01]
+          assert t1.payee == "Opening Balance"
+          assert length(t1.postings) == 3
+
+          # Check auto-balanced posting
+          equity_posting = Enum.find(t1.postings, fn p -> p.account == "Equity:OpeningBalances" end)
+          assert equity_posting.amount == %{value: -15000.00, currency: "$"}
+
+        {:error, {reason, line, file}} ->
+          flunk("Expected successful parse but got error: #{inspect(reason)} at line #{line} in #{file}")
+
+        {:error, error} ->
+          flunk("Expected successful parse but got error: #{inspect(error)}")
+      end
     end
   end
 end

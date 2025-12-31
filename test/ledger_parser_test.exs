@@ -2105,6 +2105,24 @@ defmodule ExLedger.LedgerParserTest do
       assert LedgerParser.check_file(path)
     end
 
+    test "returns true for a valid accounts fixture" do
+      path = Path.expand("fixtures/accounts_hierarchy.ledger", __DIR__)
+
+      assert LedgerParser.check_file(path)
+    end
+
+    test "returns true for a full accounts fixture" do
+      path = Path.expand("fixtures/accounts_full.ledger", __DIR__)
+
+      assert LedgerParser.check_file(path)
+    end
+
+    test "returns false for a fixture with missing includes" do
+      path = Path.expand("fixtures/main_includes.ledger", __DIR__)
+
+      refute LedgerParser.check_file(path)
+    end
+
     test "returns false for an invalid ledger file" do
       path = Path.join(System.tmp_dir!(), "invalid.ledger")
       File.write!(path, "not a ledger file")
@@ -2313,12 +2331,160 @@ defmodule ExLedger.LedgerParserTest do
       assert {:ok, fields, rows} = LedgerParser.select(transactions, query)
       assert fields == ["date", "payee", "account", "amount"]
       assert length(rows) == 1
-      assert Enum.at(rows, 0).account == "Expenses:Food"
+      assert Enum.at(rows, 0)["account"] == "Expenses:Food"
     end
 
     test "builds xact output", %{transactions: transactions} do
       assert {:ok, output} = LedgerParser.build_xact(transactions, ~D[2024-02-01], "Coffee")
       assert String.starts_with?(output, "2024/02/01 Coffee Shop")
+    end
+  end
+
+  describe "budgeting and forecasting" do
+    test "builds budget report from periodic transactions" do
+      transactions = [
+        %{
+          kind: :periodic,
+          date: nil,
+          aux_date: nil,
+          state: :uncleared,
+          code: "",
+          payee: nil,
+          comment: nil,
+          predicate: nil,
+          period: "Monthly",
+          postings: [
+            %{
+              account: "Expenses:Rent",
+              amount: %{value: 1000.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            },
+            %{
+              account: "Assets:Checking",
+              amount: %{value: -1000.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            }
+          ]
+        },
+        %{
+          kind: :regular,
+          date: ~D[2024-01-10],
+          aux_date: nil,
+          state: :uncleared,
+          code: "",
+          payee: "Rent",
+          comment: nil,
+          predicate: nil,
+          period: nil,
+          postings: [
+            %{
+              account: "Expenses:Rent",
+              amount: %{value: 900.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            },
+            %{
+              account: "Assets:Checking",
+              amount: %{value: -900.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            }
+          ]
+        }
+      ]
+
+      rows = LedgerParser.budget_report(transactions, ~D[2024-01-15])
+      rent_row = Enum.find(rows, fn row -> row.account == "Expenses:Rent" end)
+
+      assert rent_row.actual == 900.0
+      assert rent_row.budget == 1000.0
+      assert rent_row.remaining == 100.0
+    end
+
+    test "forecasts balances using periodic transactions" do
+      transactions = [
+        %{
+          kind: :periodic,
+          date: nil,
+          aux_date: nil,
+          state: :uncleared,
+          code: "",
+          payee: nil,
+          comment: nil,
+          predicate: nil,
+          period: "Monthly",
+          postings: [
+            %{
+              account: "Assets:Checking",
+              amount: %{value: 100.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            },
+            %{
+              account: "Income:Salary",
+              amount: %{value: -100.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            }
+          ]
+        },
+        %{
+          kind: :regular,
+          date: ~D[2024-01-01],
+          aux_date: nil,
+          state: :uncleared,
+          code: "",
+          payee: "Opening",
+          comment: nil,
+          predicate: nil,
+          period: nil,
+          postings: [
+            %{
+              account: "Assets:Checking",
+              amount: %{value: 50.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            },
+            %{
+              account: "Income:Salary",
+              amount: %{value: -50.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            }
+          ]
+        }
+      ]
+
+      forecast = LedgerParser.forecast_balance(transactions, 2)
+
+      assert forecast["Assets:Checking"].value == 250.0
+      assert forecast["Income:Salary"].value == -250.0
+    end
+  end
+
+  describe "timeclock parsing" do
+    test "parses timeclock entries and summarizes hours" do
+      input = """
+      i 2024/03/01 09:00:00 Work:Project  Client A
+      o 2024/03/01 17:30:00
+      """
+
+      entries = LedgerParser.parse_timeclock_entries(input)
+      assert length(entries) == 1
+
+      report = LedgerParser.timeclock_report(entries)
+
+      assert_in_delta report["Work:Project"], 8.5, 0.01
     end
   end
 end

@@ -54,6 +54,14 @@ defmodule ExLedger.LedgerParser do
           aliases: [String.t()],
           assertions: [String.t()]
         }
+  @type time_entry :: %{
+          account: String.t(),
+          start: NaiveDateTime.t(),
+          stop: NaiveDateTime.t(),
+          payee: String.t() | nil,
+          cleared: boolean(),
+          duration_seconds: non_neg_integer()
+        }
   @type parse_error ::
           :missing_date
           | :missing_payee
@@ -79,6 +87,7 @@ defmodule ExLedger.LedgerParser do
   @type ledger_error ::
           {:include_not_found, String.t()}
           | {:circular_include, String.t()}
+          | {:include_outside_base, String.t()}
           | parse_error_detail()
 
   @amount_regex ~r/(?:\$|[A-Z]{1,5})?\s*[-+]?\d+(?:\.\d{1,2})?(?:\s*(?:\$|[A-Z]{1,5}))?/
@@ -228,34 +237,41 @@ defmodule ExLedger.LedgerParser do
     |> reduce({:flatten_integer_parts, []})
     |> unwrap_and_tag(:integer_part)
 
+  amount_number =
+    integer_with_commas
+    |> optional(
+      ignore(string("."))
+      |> concat(decimal_string |> unwrap_and_tag(:decimal_string))
+    )
+
   amount_leading_currency =
     optional(sign)
     |> concat(currency)
     |> ignore(optional_whitespace)
     |> optional(sign)
     |> ignore(optional_whitespace)
-    |> concat(integer_with_commas)
-    |> optional(
-      ignore(string("."))
-      |> concat(decimal_string |> unwrap_and_tag(:decimal_string))
-    )
+    |> concat(amount_number)
     |> reduce({:to_amount, []})
 
   amount_trailing_currency =
     optional(sign)
-    |> concat(integer_with_commas)
-    |> optional(
-      ignore(string("."))
-      |> concat(decimal_string |> unwrap_and_tag(:decimal_string))
-    )
+    |> concat(amount_number)
     |> ignore(optional_whitespace)
     |> concat(currency)
+    |> reduce({:to_amount, []})
+
+  # Bare number without currency (e.g., just "0")
+  # This is valid ledger syntax and should default to no currency
+  amount_bare_number =
+    optional(sign)
+    |> concat(amount_number)
     |> reduce({:to_amount, []})
 
   amount_value =
     choice([
       amount_leading_currency,
-      amount_trailing_currency
+      amount_trailing_currency,
+      amount_bare_number
     ])
 
   defparsec(:amount_parser, amount_value)
@@ -283,21 +299,13 @@ defmodule ExLedger.LedgerParser do
     |> utf8_string([not: ?\n], min: 0)
     |> optional()
 
-  # Posting line with amount
-  posting_with_amount =
+  posting_with_optional_amount =
     ignore(indentation)
     |> concat(account_name)
-    |> ignore(ascii_string([?\s, ?\t], min: 2))
-    |> concat(amount_value |> unwrap_and_tag(:amount))
-    |> ignore(inline_comment)
-    |> ignore(optional_whitespace)
-    |> ignore(optional(string("\n")))
-    |> reduce({:to_posting, []})
-
-  # Posting line without amount (auto-balanced)
-  posting_without_amount =
-    ignore(indentation)
-    |> concat(account_name)
+    |> optional(
+      ignore(ascii_string([?\s, ?\t], min: 2))
+      |> concat(amount_value |> unwrap_and_tag(:amount))
+    )
     |> ignore(inline_comment)
     |> ignore(optional_whitespace)
     |> ignore(optional(string("\n")))
@@ -331,7 +339,7 @@ defmodule ExLedger.LedgerParser do
   # Posting (with optional preceding notes)
   posting =
     times(note_line, min: 0)
-    |> choice([posting_with_amount, posting_without_amount])
+    |> concat(posting_with_optional_amount)
     |> reduce({:attach_notes_to_posting, []})
 
   # Complete transaction
@@ -781,6 +789,40 @@ defmodule ExLedger.LedgerParser do
     end
   end
 
+  @doc """
+  Checks a ledger file and returns `{:ok, :valid}` or `{:error, reason}`.
+  """
+  @spec check_file_with_error(String.t()) :: {:ok, :valid} | {:error, ledger_error()}
+  def check_file_with_error(path) when is_binary(path) do
+    base_dir = Path.dirname(path)
+    filename = Path.basename(path)
+
+    with {:ok, contents} <- File.read(path),
+         {:ok, _transactions, _accounts} <-
+           parse_ledger_with_includes(contents, base_dir, MapSet.new(), filename) do
+      {:ok, :valid}
+    else
+      {:error, reason} -> {:error, reason}
+      {:error, reason, _} -> {:error, reason}
+      error -> {:error, error}
+    end
+  end
+
+  @doc """
+  Checks whether the given ledger string parses successfully.
+
+  Use `base_dir` to resolve include directives in the content.
+  """
+  @spec check_string(String.t(), String.t()) :: boolean()
+  def check_string(content, base_dir \\ ".") when is_binary(content) and is_binary(base_dir) do
+    with {:ok, _transactions, _accounts} <-
+           parse_ledger_with_includes(content, base_dir, MapSet.new(), nil) do
+      true
+    else
+      _ -> false
+    end
+  end
+
   @spec parse_ledger(String.t(), String.t() | nil) ::
           {:ok, [transaction()]} | {:error, {parse_error(), non_neg_integer(), String.t() | nil}}
   def parse_ledger("", _source_file), do: {:ok, []}
@@ -829,27 +871,29 @@ defmodule ExLedger.LedgerParser do
 
     cond do
       String.starts_with?(trimmed, "alias ") ->
-        handle_standalone_alias(trimmed, rest, acc)
+        parse_account_blocks(rest, maybe_prepend_account(acc, standalone_alias_entry(trimmed)))
 
-      old_account_format?(trimmed, line) ->
-        handle_old_account_format(line, rest, acc)
+      old_account_format_line?(trimmed, line) ->
+        parse_account_blocks(rest, maybe_prepend_account(acc, old_account_entry(line)))
 
       String.starts_with?(trimmed, "account ") ->
-        handle_new_account_format([line | rest], acc)
+        {account_lines, remaining} = collect_account_block([line | rest])
+        account = parse_account_block(account_lines)
+        parse_account_blocks(remaining, [account | acc])
 
       true ->
         parse_account_blocks(rest, acc)
     end
   end
 
-  defp old_account_format?(trimmed, line) do
+  defp old_account_format_line?(trimmed, line) do
     String.starts_with?(trimmed, "account ") and String.contains?(line, ";")
   end
 
-  defp handle_standalone_alias(trimmed, rest, acc) do
+  defp standalone_alias_entry(trimmed) do
     case parse_standalone_alias(trimmed) do
       {:ok, alias_name, account_name} ->
-        alias_entry = %{
+        %{
           name: alias_name,
           type: :alias,
           aliases: [],
@@ -857,29 +901,20 @@ defmodule ExLedger.LedgerParser do
           target: account_name
         }
 
-        parse_account_blocks(rest, [alias_entry | acc])
-
       {:error, _} ->
-        parse_account_blocks(rest, acc)
+        nil
     end
   end
 
-  defp handle_old_account_format(line, rest, acc) do
+  defp old_account_entry(line) do
     case parse_account_declaration(line) do
-      {:ok, account} ->
-        account = Map.merge(account, %{aliases: [], assertions: []})
-        parse_account_blocks(rest, [account | acc])
-
-      {:error, _} ->
-        parse_account_blocks(rest, acc)
+      {:ok, account} -> Map.merge(account, %{aliases: [], assertions: []})
+      {:error, _} -> nil
     end
   end
 
-  defp handle_new_account_format(lines, acc) do
-    {account_lines, remaining} = collect_account_block(lines)
-    account = parse_account_block(account_lines)
-    parse_account_blocks(remaining, [account | acc])
-  end
+  defp maybe_prepend_account(acc, nil), do: acc
+  defp maybe_prepend_account(acc, entry), do: [entry | acc]
 
   @spec parse_standalone_alias(String.t()) ::
           {:ok, String.t(), String.t()} | {:error, :invalid_alias}
@@ -922,25 +957,7 @@ defmodule ExLedger.LedgerParser do
       |> String.trim()
 
     # Parse indented lines for aliases and assertions
-    {aliases, assertions} =
-      rest
-      |> Enum.filter(fn line -> String.trim(line) != "" end)
-      |> Enum.reduce({[], []}, fn line, {aliases_acc, assertions_acc} ->
-        trimmed = String.trim(line)
-
-        cond do
-          String.starts_with?(trimmed, "alias ") ->
-            alias_name = String.trim_leading(trimmed, "alias") |> String.trim()
-            {[alias_name | aliases_acc], assertions_acc}
-
-          String.starts_with?(trimmed, "assert ") ->
-            assertion = String.trim_leading(trimmed, "assert") |> String.trim()
-            {aliases_acc, [assertion | assertions_acc]}
-
-          true ->
-            {aliases_acc, assertions_acc}
-        end
-      end)
+    {aliases, assertions} = Enum.reduce(rest, {[], []}, &parse_account_block_line/2)
 
     %{
       name: account_name,
@@ -950,18 +967,33 @@ defmodule ExLedger.LedgerParser do
     }
   end
 
+  defp parse_account_block_line(line, {aliases, assertions}) do
+    trimmed = String.trim(line)
+
+    cond do
+      trimmed == "" ->
+        {aliases, assertions}
+
+      String.starts_with?(trimmed, "alias ") ->
+        alias_name = String.trim_leading(trimmed, "alias") |> String.trim()
+        {[alias_name | aliases], assertions}
+
+      String.starts_with?(trimmed, "assert ") ->
+        assertion = String.trim_leading(trimmed, "assert") |> String.trim()
+        {aliases, [assertion | assertions]}
+
+      true ->
+        {aliases, assertions}
+    end
+  end
+
   @spec build_account_map([account_declaration()]) :: %{String.t() => atom() | String.t()}
   defp build_account_map(account_declarations) do
     Enum.reduce(account_declarations, %{}, &add_account_to_map/2)
   end
 
-  defp add_account_to_map(account, acc) do
-    if account.type == :alias do
-      add_standalone_alias(account, acc)
-    else
-      add_account_with_aliases(account, acc)
-    end
-  end
+  defp add_account_to_map(%{type: :alias} = account, acc), do: add_standalone_alias(account, acc)
+  defp add_account_to_map(account, acc), do: add_account_with_aliases(account, acc)
 
   defp add_standalone_alias(account, acc) do
     # For standalone alias, map the alias name to the target account name
@@ -995,6 +1027,7 @@ defmodule ExLedger.LedgerParser do
   - Comments after the filename (e.g., "include file.ledger ; comment")
   - Nested includes (files can include other files)
   - Circular include detection
+  - Include paths must stay within the base directory
   - Account declarations (e.g., "account Assets:Checking  ; type:asset")
 
   Returns `{:ok, transactions, accounts}` with all transactions from the main file and all included files,
@@ -1020,6 +1053,20 @@ defmodule ExLedger.LedgerParser do
   def parse_ledger_with_includes(input, base_dir, seen_files, source_file)
       when is_binary(source_file) or is_nil(source_file) do
     parse_ledger_with_includes_with_import(input, base_dir, seen_files, source_file, nil)
+  end
+
+  @spec expand_includes(String.t(), String.t()) :: {:ok, String.t()} | {:error, ledger_error()}
+  @spec expand_includes(String.t(), String.t(), MapSet.t(String.t())) ::
+          {:ok, String.t()} | {:error, ledger_error()}
+  @spec expand_includes(String.t(), String.t(), MapSet.t(String.t()), String.t() | nil) ::
+          {:ok, String.t()} | {:error, ledger_error()}
+  def expand_includes(input, base_dir, seen_files \\ MapSet.new(), source_file \\ nil)
+
+  def expand_includes("", _base_dir, _seen_files, _source_file), do: {:ok, ""}
+
+  def expand_includes(input, base_dir, seen_files, source_file)
+      when is_binary(source_file) or is_nil(source_file) do
+    expand_includes_with_import(input, base_dir, seen_files, source_file, nil)
   end
 
   defp parse_ledger_with_includes_with_import(
@@ -1064,15 +1111,64 @@ defmodule ExLedger.LedgerParser do
     end
   end
 
+  defp expand_includes_with_import(input, base_dir, seen_files, source_file, import_chain) do
+    input
+    |> String.split("\n")
+    |> Enum.with_index(1)
+    |> expand_lines_and_includes(base_dir, seen_files, source_file, import_chain, [])
+  end
+
+  defp expand_lines_and_includes([], _base_dir, _seen_files, _source_file, _import_chain, acc) do
+    {:ok, acc |> Enum.reverse() |> Enum.join("\n")}
+  end
+
+  defp expand_lines_and_includes(
+         [{line, line_num} | rest],
+         base_dir,
+         seen_files,
+         source_file,
+         import_chain,
+         acc
+       ) do
+    trimmed = String.trim(line)
+
+    if String.starts_with?(trimmed, "include ") do
+      filename = extract_include_filename(trimmed)
+
+      with {:ok, absolute_path} <- resolve_include_path(base_dir, filename),
+           :ok <- check_circular_include(seen_files, absolute_path, filename),
+           :ok <- check_file_exists(absolute_path, filename),
+           {:ok, included_content} <- read_included_file(absolute_path, filename) do
+        included_dir = Path.dirname(absolute_path)
+        updated_seen = MapSet.put(seen_files, absolute_path)
+        new_import_chain = build_import_chain(source_file, line_num, import_chain)
+
+        with {:ok, expanded} <-
+               expand_includes_with_import(
+                 included_content,
+                 included_dir,
+                 updated_seen,
+                 filename,
+                 new_import_chain
+               ) do
+          new_acc = if expanded == "", do: acc, else: [expanded | acc]
+          expand_lines_and_includes(rest, base_dir, seen_files, source_file, import_chain, new_acc)
+        end
+      end
+    else
+      expand_lines_and_includes(rest, base_dir, seen_files, source_file, import_chain, [line | acc])
+    end
+  end
+
   defp process_content_chunk(before_include, include_and_after, context) do
     content = Enum.map_join(before_include, "\n", fn {line, _} -> line end)
 
-    if String.trim(content) == "" or only_comments_and_whitespace?(content) do
+    if skip_content_chunk?(content) do
       process_lines_and_includes(include_and_after, context)
     else
       case parse_ledger(content, context.source_file) do
         {:ok, transactions} ->
-          updated_context = %{context | transactions: context.transactions ++ transactions}
+          updated_context = append_transactions(context, transactions)
           process_lines_and_includes(include_and_after, updated_context)
 
         {:error, {reason, line, error_source_file}} ->
@@ -1102,8 +1198,18 @@ defmodule ExLedger.LedgerParser do
       trimmed = String.trim(line)
 
       trimmed == "" or String.starts_with?(trimmed, ";") or
-        String.starts_with?(trimmed, "account ")
+        String.starts_with?(trimmed, "account ") or
+        String.starts_with?(trimmed, "alias ") or
+        String.starts_with?(trimmed, "assert ")
     end)
+  end
+
+  defp skip_content_chunk?(content) do
+    String.trim(content) == "" or only_comments_and_whitespace?(content)
+  end
+
+  defp append_transactions(context, transactions) do
+    %{context | transactions: context.transactions ++ transactions}
   end
 
   defp split_at_include(lines) do
@@ -1126,9 +1232,9 @@ defmodule ExLedger.LedgerParser do
 
   defp process_include_directive(trimmed_line, line_num, rest, context) do
     filename = extract_include_filename(trimmed_line)
-    absolute_path = resolve_include_path(context.base_dir, filename)
 
-    with :ok <- check_circular_include(context.seen_files, absolute_path, filename),
+    with {:ok, absolute_path} <- resolve_include_path(context.base_dir, filename),
+         :ok <- check_circular_include(context.seen_files, absolute_path, filename),
          :ok <- check_file_exists(absolute_path, filename),
          {:ok, included_content} <- read_included_file(absolute_path, filename) do
       process_included_content(included_content, absolute_path, filename, line_num, rest, context)
@@ -1144,9 +1250,29 @@ defmodule ExLedger.LedgerParser do
   end
 
   defp resolve_include_path(base_dir, filename) do
-    base_dir
-    |> Path.join(filename)
-    |> Path.expand()
+    base_dir = Path.expand(base_dir)
+
+    if Path.type(filename) == :absolute do
+      {:error, {:include_outside_base, filename}}
+    else
+      absolute_path =
+        base_dir
+        |> Path.join(filename)
+        |> Path.expand()
+
+      if path_within_base?(absolute_path, base_dir) do
+        {:ok, absolute_path}
+      else
+        {:error, {:include_outside_base, filename}}
+      end
+    end
+  end
+
+  defp path_within_base?(absolute_path, base_dir) do
+    absolute_segments = Path.split(absolute_path)
+    base_segments = Path.split(base_dir)
+
+    base_segments == Enum.take(absolute_segments, length(base_segments))
   end
 
   defp check_circular_include(seen_files, absolute_path, filename) do
@@ -1184,29 +1310,22 @@ defmodule ExLedger.LedgerParser do
     updated_seen = MapSet.put(context.seen_files, absolute_path)
     new_import_chain = build_import_chain(context.source_file, line_num, context.import_chain)
 
-    result =
-      parse_ledger_with_includes_with_import(
-        included_content,
-        included_dir,
-        updated_seen,
-        filename,
-        new_import_chain
-      )
+    with {:ok, included_transactions, included_accounts} <-
+           parse_ledger_with_includes_with_import(
+             included_content,
+             included_dir,
+             updated_seen,
+             filename,
+             new_import_chain
+           ) do
+      merged_accounts = Map.merge(context.accounts, included_accounts)
 
-    case result do
-      {:ok, included_transactions, included_accounts} ->
-        merged_accounts = Map.merge(context.accounts, included_accounts)
+      updated_context =
+        context
+        |> append_transactions(included_transactions)
+        |> Map.put(:accounts, merged_accounts)
 
-        updated_context = %{
-          context
-          | transactions: context.transactions ++ included_transactions,
-            accounts: merged_accounts
-        }
-
-        process_lines_and_includes(rest, updated_context)
-
-      error ->
-        error
+      process_lines_and_includes(rest, updated_context)
     end
   end
 
@@ -1229,6 +1348,13 @@ defmodule ExLedger.LedgerParser do
     trimmed = String.trim(line)
 
     cond do
+      timeclock_line?(trimmed) and current_lines == [] ->
+        {chunks, [], nil, false}
+
+      timeclock_line?(trimmed) ->
+        chunk = Enum.reverse(current_lines) |> Enum.join("\n")
+        {[{chunk, start_line || index} | chunks], [], nil, false}
+
       old_account_declaration?(trimmed, line, current_lines) ->
         {chunks, [], nil, false}
 
@@ -1294,6 +1420,11 @@ defmodule ExLedger.LedgerParser do
 
   defp starts_with_periodic?(line) do
     String.starts_with?(line, "~")
+  end
+
+  defp timeclock_line?(line) do
+    String.starts_with?(line, "i ") or String.starts_with?(line, "o ") or
+      String.starts_with?(line, "O ")
   end
 
   defp starts_new_entry?(line) do
@@ -1730,6 +1861,287 @@ defmodule ExLedger.LedgerParser do
     Map.get(transaction, :kind, :regular) == :regular and not is_nil(transaction.date)
   end
 
+  @spec parse_timeclock_entries(String.t()) :: [time_entry()]
+  def parse_timeclock_entries(input) when is_binary(input) do
+    input
+    |> String.split("\n")
+    |> Enum.reduce({[], []}, fn line, {entries, open} ->
+      trimmed = String.trim(line)
+
+      cond do
+        String.starts_with?(trimmed, "i ") ->
+          case parse_timeclock_checkin(trimmed) do
+            {:ok, entry} -> {entries, [entry | open]}
+            _ -> {entries, open}
+          end
+
+        String.starts_with?(trimmed, "o ") or String.starts_with?(trimmed, "O ") ->
+          {new_entries, remaining} = close_timeclock_entries(trimmed, open)
+          {entries ++ new_entries, remaining}
+
+        true ->
+          {entries, open}
+      end
+    end)
+    |> elem(0)
+  end
+
+  @spec timeclock_report([time_entry()]) :: %{String.t() => float()}
+  def timeclock_report(entries) do
+    entries
+    |> Enum.group_by(& &1.account)
+    |> Enum.map(fn {account, account_entries} ->
+      total_seconds = Enum.reduce(account_entries, 0, fn entry, acc -> acc + entry.duration_seconds end)
+      hours = total_seconds / 3600
+      {account, hours}
+    end)
+    |> Map.new()
+  end
+
+  @spec format_timeclock_report(%{String.t() => float()}) :: String.t()
+  def format_timeclock_report(report) do
+    report
+    |> Enum.sort_by(fn {account, _hours} -> account end)
+    |> Enum.map_join("\n", fn {account, hours} ->
+      formatted_hours = :erlang.float_to_binary(hours, decimals: 2)
+      String.pad_leading(formatted_hours, 8) <> "  " <> account
+    end)
+    |> Kernel.<>("\n")
+  end
+
+  @spec budget_report([transaction()], Date.t()) :: [map()]
+  def budget_report(transactions, date \\ Date.utc_today()) do
+    periodic_transactions = Enum.filter(transactions, &(&1.kind == :periodic))
+    regular_transactions = Enum.filter(transactions, &regular_transaction?/1)
+
+    budget_totals = build_budget_totals(periodic_transactions)
+    actual_totals = build_actual_totals(regular_transactions, date)
+
+    budget_accounts = Map.keys(budget_totals)
+    actual_accounts = Map.keys(actual_totals)
+
+    (budget_accounts ++ actual_accounts)
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.flat_map(fn account ->
+      account_budget = Map.get(budget_totals, account, %{})
+      account_actual = Map.get(actual_totals, account, %{})
+      currencies = (Map.keys(account_budget) ++ Map.keys(account_actual)) |> Enum.uniq() |> Enum.sort()
+
+      Enum.map(currencies, fn currency ->
+        budget_value = Map.get(account_budget, currency, 0.0)
+        actual_value = Map.get(account_actual, currency, 0.0)
+
+        %{
+          account: account,
+          currency: currency,
+          actual: actual_value,
+          budget: budget_value,
+          remaining: budget_value - actual_value
+        }
+      end)
+    end)
+  end
+
+  @spec format_budget_report([map()]) :: String.t()
+  def format_budget_report(rows) do
+    header = String.pad_leading("Actual", 14) <> String.pad_leading("Budget", 14) <>
+      String.pad_leading("Remaining", 14) <> "  Account"
+
+    body =
+      rows
+      |> Enum.map(fn row ->
+        actual = format_amount_for_currency(row.actual, row.currency)
+        budget = format_amount_for_currency(row.budget, row.currency)
+        remaining = format_amount_for_currency(row.remaining, row.currency)
+
+        String.pad_leading(actual, 14) <> String.pad_leading(budget, 14) <>
+          String.pad_leading(remaining, 14) <> "  " <> row.account
+      end)
+      |> Enum.join("\n")
+
+    header <> "\n" <> body <> "\n"
+  end
+
+  @spec forecast_balance([transaction()], pos_integer()) :: %{String.t() => amount()}
+  def forecast_balance(transactions, months \\ 1) do
+    current_balances = balance(transactions)
+    budget_totals = build_budget_totals(Enum.filter(transactions, &(&1.kind == :periodic)))
+
+    budget_adjustments =
+      Enum.reduce(budget_totals, %{}, fn {account, currency_map}, acc ->
+        Enum.reduce(currency_map, acc, fn {currency, value}, acc_inner ->
+          Map.update(acc_inner, {account, currency}, value * months, &(&1 + value * months))
+        end)
+      end)
+
+    current_entries =
+      current_balances
+      |> Enum.map(fn {account, %{value: value, currency: currency}} ->
+        {{account, currency}, value}
+      end)
+      |> Map.new()
+
+    current_entries
+    |> Map.merge(budget_adjustments, fn _key, value, adjustment -> value + adjustment end)
+    |> Enum.map(fn {{account, currency}, value} ->
+      {account, %{value: value, currency: currency}}
+    end)
+    |> Map.new()
+  end
+
+  defp build_budget_totals(periodic_transactions) do
+    periodic_transactions
+    |> Enum.reduce(%{}, fn transaction, acc ->
+      multiplier = period_multiplier(transaction.period)
+
+      if multiplier == nil do
+        acc
+      else
+        Enum.reduce(transaction.postings, acc, fn posting, acc_inner ->
+          case posting.amount do
+            nil -> acc_inner
+            %{value: value, currency: currency} ->
+              Map.update(acc_inner, posting.account, %{currency => value * multiplier}, fn totals ->
+                Map.update(totals, currency, value * multiplier, &(&1 + value * multiplier))
+              end)
+          end
+        end)
+      end
+    end)
+  end
+
+  defp build_actual_totals(transactions, date) do
+    Enum.reduce(transactions, %{}, fn transaction, acc ->
+      if same_month?(transaction.date, date) do
+        Enum.reduce(transaction.postings, acc, fn posting, acc_inner ->
+          case posting.amount do
+            nil -> acc_inner
+            %{value: value, currency: currency} ->
+              Map.update(acc_inner, posting.account, %{currency => value}, fn totals ->
+                Map.update(totals, currency, value, &(&1 + value))
+              end)
+          end
+        end)
+      else
+        acc
+      end
+    end)
+  end
+
+  defp same_month?(nil, _date), do: false
+
+  defp same_month?(date, other_date) do
+    date.year == other_date.year and date.month == other_date.month
+  end
+
+  defp period_multiplier(nil), do: nil
+
+  defp period_multiplier(period) do
+    normalized = String.downcase(period)
+
+    cond do
+      String.contains?(normalized, "daily") -> 365.0 / 12.0
+      String.contains?(normalized, "weekly") and String.contains?(normalized, "bi") -> 26.0 / 12.0
+      String.contains?(normalized, "weekly") -> 52.0 / 12.0
+      String.contains?(normalized, "monthly") and String.contains?(normalized, "bi") -> 0.5
+      String.contains?(normalized, "monthly") -> 1.0
+      String.contains?(normalized, "quarter") -> 1.0 / 3.0
+      String.contains?(normalized, "year") -> 1.0 / 12.0
+      true -> nil
+    end
+  end
+
+  defp parse_timeclock_checkin(line) do
+    case Regex.run(~r/^i\s+(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})\s+(\d{2}:\d{2}:\d{2})\s+(.+)$/, line) do
+      [_, date_string, time_string, rest] ->
+        with {:ok, date} <- parse_timeclock_date(date_string),
+             {:ok, time} <- parse_timeclock_time(time_string) do
+          {account, payee} = split_account_payee(rest)
+
+          {:ok,
+           %{
+             account: account,
+             start: NaiveDateTime.new!(date, time),
+             payee: payee
+           }}
+        else
+          _ -> {:error, :invalid_checkin}
+        end
+
+      _ ->
+        {:error, :invalid_checkin}
+    end
+  end
+
+  defp close_timeclock_entries(line, open_entries) do
+    case Regex.run(~r/^(o|O)\s+(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})\s+(\d{2}:\d{2}:\d{2})$/, line) do
+      [_, marker, date_string, time_string] ->
+        with {:ok, date} <- parse_timeclock_date(date_string),
+             {:ok, time} <- parse_timeclock_time(time_string) do
+          stop = NaiveDateTime.new!(date, time)
+          cleared = marker == "O"
+
+          entries =
+            Enum.map(open_entries, fn entry ->
+              duration = max(NaiveDateTime.diff(stop, entry.start, :second), 0)
+
+              %{
+                account: entry.account,
+                start: entry.start,
+                stop: stop,
+                payee: entry.payee,
+                cleared: cleared,
+                duration_seconds: duration
+              }
+            end)
+
+          {entries, []}
+        else
+          _ -> {[], open_entries}
+        end
+
+      _ ->
+        {[], open_entries}
+    end
+  end
+
+  defp parse_timeclock_date(date_string) do
+    date_string
+    |> parse_date_string()
+  end
+
+  defp parse_timeclock_time(time_string) do
+    case Time.from_iso8601(time_string) do
+      {:ok, time} -> {:ok, time}
+      _ -> {:error, :invalid_time}
+    end
+  end
+
+  defp parse_date_string(date_string) do
+    case String.split(date_string, ~r/[\/\-]/) do
+      [year, month, day] ->
+        with {year, ""} <- Integer.parse(year),
+             {month, ""} <- Integer.parse(month),
+             {day, ""} <- Integer.parse(day),
+             {:ok, date} <- Date.new(year, month, day) do
+          {:ok, date}
+        else
+          _ -> {:error, :invalid_date}
+        end
+
+      _ ->
+        {:error, :invalid_date}
+    end
+  end
+
+  defp split_account_payee(rest) do
+    case String.split(rest, ~r/\s{2,}/, parts: 2) do
+      [account] -> {String.trim(account), nil}
+      [account, payee] -> {String.trim(account), String.trim(payee)}
+    end
+  end
+
   defp min_max_dates([]), do: {nil, nil}
 
   defp min_max_dates(dates) do
@@ -1894,9 +2306,13 @@ defmodule ExLedger.LedgerParser do
   end
 
   defp compile_regex(source) do
-    case Regex.compile(source) do
-      {:ok, regex} -> {:ok, regex}
-      {:error, _} -> {:error, :invalid_regex}
+    if String.length(source) > 256 do
+      {:error, :invalid_regex}
+    else
+      case Regex.compile(source) do
+        {:ok, regex} -> {:ok, regex}
+        {:error, _} -> {:error, :invalid_regex}
+      end
     end
   end
 

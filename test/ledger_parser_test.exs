@@ -2487,4 +2487,445 @@ defmodule ExLedger.LedgerParserTest do
       assert_in_delta report["Work:Project"], 8.5, 0.01
     end
   end
+
+  describe "balance_by_period/5" do
+    setup do
+      transactions = [
+        %{
+          kind: :regular,
+          date: ~D[2024-01-15],
+          aux_date: nil,
+          state: :uncleared,
+          code: "",
+          payee: "Grocery Store",
+          comment: nil,
+          predicate: nil,
+          period: nil,
+          postings: [
+            %{
+              account: "Expenses:Food",
+              amount: %{value: 100.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            },
+            %{
+              account: "Assets:Cash",
+              amount: %{value: -100.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            }
+          ]
+        },
+        %{
+          kind: :regular,
+          date: ~D[2024-01-25],
+          aux_date: nil,
+          state: :uncleared,
+          code: "",
+          payee: "Restaurant",
+          comment: nil,
+          predicate: nil,
+          period: nil,
+          postings: [
+            %{
+              account: "Expenses:Food",
+              amount: %{value: 50.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            },
+            %{
+              account: "Assets:Cash",
+              amount: %{value: -50.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            }
+          ]
+        },
+        %{
+          kind: :regular,
+          date: ~D[2024-02-10],
+          aux_date: nil,
+          state: :uncleared,
+          code: "",
+          payee: "Coffee Shop",
+          comment: nil,
+          predicate: nil,
+          period: nil,
+          postings: [
+            %{
+              account: "Expenses:Food",
+              amount: %{value: 25.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            },
+            %{
+              account: "Assets:Cash",
+              amount: %{value: -25.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            }
+          ]
+        },
+        %{
+          kind: :regular,
+          date: ~D[2024-03-05],
+          aux_date: nil,
+          state: :uncleared,
+          code: "",
+          payee: "Supermarket",
+          comment: nil,
+          predicate: nil,
+          period: nil,
+          postings: [
+            %{
+              account: "Expenses:Food",
+              amount: %{value: 75.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            },
+            %{
+              account: "Assets:Cash",
+              amount: %{value: -75.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            }
+          ]
+        }
+      ]
+
+      {:ok, transactions: transactions}
+    end
+
+    test "returns empty result for empty transactions list" do
+      result = LedgerParser.balance_by_period([], "monthly")
+      assert result == %{"periods" => [], "balances" => %{}}
+    end
+
+    test "returns empty result when group_by is 'none'" do
+      transactions = [
+        %{
+          kind: :regular,
+          date: ~D[2024-01-15],
+          postings: [
+            %{account: "Assets:Cash", amount: %{value: 100.0, currency: "$"}}
+          ]
+        }
+      ]
+
+      result = LedgerParser.balance_by_period(transactions, "none")
+      assert result == %{"periods" => [], "balances" => %{}}
+    end
+
+    test "calculates monthly balances correctly", %{transactions: transactions} do
+      result = LedgerParser.balance_by_period(transactions, "monthly")
+
+      periods = result["periods"]
+      balances = result["balances"]
+
+      # Should have 3 periods (Jan, Feb, Mar 2024)
+      assert length(periods) == 3
+      assert Enum.at(periods, 0).label == "2024-01"
+      assert Enum.at(periods, 1).label == "2024-02"
+      assert Enum.at(periods, 2).label == "2024-03"
+
+      # January: $100 + $50 = $150 food, -$150 cash
+      jan_balances = balances["2024-01"]
+      assert jan_balances["Expenses:Food"].value == 150.0
+      assert jan_balances["Assets:Cash"].value == -150.0
+
+      # February: cumulative = Jan + Feb = $150 + $25 = $175 food, -$175 cash
+      feb_balances = balances["2024-02"]
+      assert feb_balances["Expenses:Food"].value == 175.0
+      assert feb_balances["Assets:Cash"].value == -175.0
+
+      # March: cumulative = Jan + Feb + Mar = $175 + $75 = $250 food, -$250 cash
+      mar_balances = balances["2024-03"]
+      assert mar_balances["Expenses:Food"].value == 250.0
+      assert mar_balances["Assets:Cash"].value == -250.0
+    end
+
+    test "calculates quarterly balances correctly", %{transactions: transactions} do
+      result = LedgerParser.balance_by_period(transactions, "quarterly")
+
+      periods = result["periods"]
+      balances = result["balances"]
+
+      # Should have 1 period (Q1 2024)
+      assert length(periods) == 1
+      assert Enum.at(periods, 0).label == "2024 Q1"
+
+      # Q1: all transactions = $100 + $50 + $25 + $75 = $250 food, -$250 cash
+      q1_balances = balances["2024 Q1"]
+      assert q1_balances["Expenses:Food"].value == 250.0
+      assert q1_balances["Assets:Cash"].value == -250.0
+    end
+
+    test "calculates yearly balances correctly", %{transactions: transactions} do
+      result = LedgerParser.balance_by_period(transactions, "yearly")
+
+      periods = result["periods"]
+      balances = result["balances"]
+
+      # Should have 1 period (2024)
+      assert length(periods) == 1
+      assert Enum.at(periods, 0).label == "2024"
+
+      # 2024: all transactions = $250 food, -$250 cash
+      year_balances = balances["2024"]
+      assert year_balances["Expenses:Food"].value == 250.0
+      assert year_balances["Assets:Cash"].value == -250.0
+    end
+
+    test "groups yearly balances without carrying prior years" do
+      transactions = [
+        %{
+          kind: :regular,
+          date: ~D[2024-06-01],
+          postings: [
+            %{account: "Expenses:Food", amount: %{value: 40.0, currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: -40.0, currency: "$"}}
+          ]
+        },
+        %{
+          kind: :regular,
+          date: ~D[2025-01-10],
+          postings: [
+            %{account: "Expenses:Food", amount: %{value: 60.0, currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: -60.0, currency: "$"}}
+          ]
+        }
+      ]
+
+      result = LedgerParser.balance_by_period(transactions, "yearly")
+
+      periods = result["periods"]
+      balances = result["balances"]
+
+      assert Enum.map(periods, & &1.label) == ["2024", "2025"]
+
+      year_2024 = balances["2024"]
+      assert year_2024["Expenses:Food"].value == 40.0
+      assert year_2024["Assets:Cash"].value == -40.0
+
+      year_2025 = balances["2025"]
+      assert year_2025["Expenses:Food"].value == 60.0
+      assert year_2025["Assets:Cash"].value == -60.0
+    end
+
+    test "applies account filter correctly", %{transactions: transactions} do
+      # Filter to only show Expenses:Food
+      filter = fn account -> String.starts_with?(account, "Expenses:") end
+      result = LedgerParser.balance_by_period(transactions, "monthly", nil, nil, filter)
+
+      balances = result["balances"]
+
+      # January balances should only include Expenses:Food
+      jan_balances = balances["2024-01"]
+      assert Map.has_key?(jan_balances, "Expenses:Food")
+      refute Map.has_key?(jan_balances, "Assets:Cash")
+      assert jan_balances["Expenses:Food"].value == 150.0
+    end
+
+    test "respects start_date parameter" do
+      transactions = [
+        %{
+          kind: :regular,
+          date: ~D[2024-01-15],
+          postings: [
+            %{account: "Expenses:Food", amount: %{value: 100.0, currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: -100.0, currency: "$"}}
+          ]
+        },
+        %{
+          kind: :regular,
+          date: ~D[2024-02-15],
+          postings: [
+            %{account: "Expenses:Food", amount: %{value: 50.0, currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: -50.0, currency: "$"}}
+          ]
+        }
+      ]
+
+      # Start from February
+      result = LedgerParser.balance_by_period(transactions, "monthly", ~D[2024-02-01], nil, nil)
+
+      periods = result["periods"]
+
+      # Should only have February period
+      assert length(periods) == 1
+      assert Enum.at(periods, 0).label == "2024-02"
+    end
+
+    test "respects end_date parameter" do
+      transactions = [
+        %{
+          kind: :regular,
+          date: ~D[2024-01-15],
+          postings: [
+            %{account: "Expenses:Food", amount: %{value: 100.0, currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: -100.0, currency: "$"}}
+          ]
+        },
+        %{
+          kind: :regular,
+          date: ~D[2024-02-15],
+          postings: [
+            %{account: "Expenses:Food", amount: %{value: 50.0, currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: -50.0, currency: "$"}}
+          ]
+        }
+      ]
+
+      # End at January
+      result = LedgerParser.balance_by_period(transactions, "monthly", nil, ~D[2024-01-31], nil)
+
+      periods = result["periods"]
+
+      # Should only have January period
+      assert length(periods) == 1
+      assert Enum.at(periods, 0).label == "2024-01"
+    end
+
+    test "handles multiple currencies correctly" do
+      transactions = [
+        %{
+          kind: :regular,
+          date: ~D[2024-01-15],
+          postings: [
+            %{account: "Expenses:Food", amount: %{value: 100.0, currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: -100.0, currency: "$"}}
+          ]
+        },
+        %{
+          kind: :regular,
+          date: ~D[2024-01-20],
+          postings: [
+            %{account: "Expenses:Food", amount: %{value: 50.0, currency: "EUR"}},
+            %{account: "Assets:Cash", amount: %{value: -50.0, currency: "EUR"}}
+          ]
+        }
+      ]
+
+      result = LedgerParser.balance_by_period(transactions, "monthly")
+
+      balances = result["balances"]
+      jan_balances = balances["2024-01"]
+
+      # Note: balance/1 sums all values for an account regardless of currency
+      # and uses the first currency found. This is existing behavior.
+      # $100 + EUR 50 = 150 (treated as same currency)
+      assert jan_balances["Expenses:Food"].value == 150.0
+      assert jan_balances["Expenses:Food"].currency == "$"
+      assert jan_balances["Assets:Cash"].value == -150.0
+      assert jan_balances["Assets:Cash"].currency == "$"
+    end
+
+    test "filters out non-regular transactions" do
+      transactions = [
+        %{
+          kind: :regular,
+          date: ~D[2024-01-15],
+          postings: [
+            %{account: "Expenses:Food", amount: %{value: 100.0, currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: -100.0, currency: "$"}}
+          ]
+        },
+        %{
+          kind: :periodic,
+          date: nil,
+          period: "Monthly",
+          postings: [
+            %{account: "Expenses:Rent", amount: %{value: 1000.0, currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: -1000.0, currency: "$"}}
+          ]
+        },
+        %{
+          kind: :automated,
+          date: ~D[2024-01-20],
+          predicate: "expr true",
+          postings: [
+            %{account: "Expenses:Fee", amount: %{value: 5.0, currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: -5.0, currency: "$"}}
+          ]
+        }
+      ]
+
+      result = LedgerParser.balance_by_period(transactions, "monthly")
+
+      balances = result["balances"]
+      jan_balances = balances["2024-01"]
+
+      # Should only include regular transaction
+      assert jan_balances["Expenses:Food"].value == 100.0
+      refute Map.has_key?(jan_balances, "Expenses:Rent")
+      refute Map.has_key?(jan_balances, "Expenses:Fee")
+    end
+
+    test "performance: processes each transaction only once" do
+      # Create a large dataset to test performance
+      # Generate 365 daily transactions
+      transactions =
+        Enum.map(1..365, fn day_offset ->
+          date = Date.add(~D[2024-01-01], day_offset - 1)
+
+          %{
+            kind: :regular,
+            date: date,
+            aux_date: nil,
+            state: :uncleared,
+            code: "",
+            payee: "Transaction #{day_offset}",
+            comment: nil,
+            predicate: nil,
+            period: nil,
+            postings: [
+              %{
+                account: "Expenses:Daily",
+                amount: %{value: 10.0, currency: "$"},
+                metadata: %{},
+                tags: [],
+                comments: []
+              },
+              %{
+                account: "Assets:Cash",
+                amount: %{value: -10.0, currency: "$"},
+                metadata: %{},
+                tags: [],
+                comments: []
+              }
+            ]
+          }
+        end)
+
+      # Time the execution
+      {time_micro, result} =
+        :timer.tc(fn ->
+          LedgerParser.balance_by_period(transactions, "monthly")
+        end)
+
+      # Should complete in reasonable time (< 100ms for 365 transactions over 12 months)
+      # With old O(N²) algorithm, this would take much longer
+      assert time_micro < 100_000, "Expected < 100ms, got #{time_micro / 1000}ms"
+
+      # Verify correctness
+      balances = result["balances"]
+      periods = result["periods"]
+
+      # Should have 12 monthly periods
+      assert length(periods) == 12
+
+      # December should have cumulative balance of all 365 transactions
+      dec_balances = balances["2024-12"]
+      assert dec_balances["Expenses:Daily"].value == 3650.0
+      assert dec_balances["Assets:Cash"].value == -3650.0
+    end
+  end
 end

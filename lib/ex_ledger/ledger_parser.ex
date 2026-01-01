@@ -2618,4 +2618,211 @@ defmodule ExLedger.LedgerParser do
       _ -> "#{currency} #{sign}#{formatted}"
     end
   end
+
+  @doc """
+  Calculate balances grouped by time periods.
+
+  Returns a map where keys are account names and values are maps of period labels to balances.
+
+  ## Parameters
+  - transactions: List of transactions
+  - group_by: Grouping type ("daily", "weekly", "monthly", "quarterly", "yearly", or "none")
+  - start_date: Optional start date (defaults to first transaction date)
+  - end_date: Optional end date (defaults to last transaction date)
+  - account_filter: Optional function to filter accounts (e.g., fn account -> String.starts_with?(account, "Assets") end)
+
+  ## Examples
+
+      iex> transactions = [%{date: ~D[2024-01-15], postings: [%{account: "Assets:Cash", amount: %{value: 100, currency: "$"}}]}]
+      iex> ExLedger.LedgerParser.balance_by_period(transactions, "monthly")
+      %{"periods" => [%{label: "2024-01", start_date: ~D[2024-01-01], end_date: ~D[2024-01-31]}],
+        "balances" => %{"2024-01" => %{"Assets:Cash" => %{value: 100, currency: "$"}}}}
+  """
+  @spec balance_by_period(list(), String.t(), Date.t() | nil, Date.t() | nil, function() | nil) ::
+          %{String.t() => any()}
+  def balance_by_period(transactions, group_by \\ "none", start_date \\ nil, end_date \\ nil, account_filter \\ nil)
+
+  def balance_by_period([], _group_by, _start_date, _end_date, _account_filter) do
+    %{"periods" => [], "balances" => %{}}
+  end
+
+  def balance_by_period(_transactions, "none", _start_date, _end_date, _account_filter) do
+    %{"periods" => [], "balances" => %{}}
+  end
+
+  def balance_by_period(transactions, group_by, start_date, end_date, account_filter) do
+    # Filter and sort transactions once - only regular transactions have dates
+    sorted_txns =
+      transactions
+      |> Enum.filter(&regular_transaction?/1)
+      |> Enum.sort_by(& &1.date, Date)
+
+    # If no regular transactions, return empty result
+    if Enum.empty?(sorted_txns) do
+      %{"periods" => [], "balances" => %{}}
+    else
+      # Get all transaction dates to determine range
+      dates = Enum.map(sorted_txns, fn txn -> txn.date end)
+
+      min_date = if start_date, do: start_date, else: Enum.min(dates, Date)
+      max_date = if end_date, do: end_date, else: Enum.max(dates, Date)
+
+      # Calculate periods
+      periods = calculate_periods(min_date, max_date, group_by)
+
+      # Build balances incrementally - process each transaction only once
+      {_, balances_by_period} =
+        Enum.reduce(periods, {sorted_txns, %{}}, fn period, {remaining_txns, acc} ->
+          # Split transactions: those in/before this period vs after
+          {period_txns, rest} =
+            Enum.split_while(remaining_txns, fn txn ->
+              Date.compare(txn.date, period.end_date) != :gt
+            end)
+
+          # Calculate cumulative balance by merging previous balance with new transactions
+          period_balances =
+            if group_by == "yearly" do
+              balance(period_txns)
+            else
+              case get_previous_balances(acc) do
+                nil ->
+                  # First period - calculate from scratch
+                  balance(period_txns)
+
+                prev_balances ->
+                  # Subsequent periods - add new transactions to previous balances
+                  new_amounts = balance(period_txns)
+                  merge_balances(prev_balances, new_amounts)
+              end
+            end
+
+          # Apply account filter if provided
+          filtered_balances =
+            if account_filter do
+              period_balances
+              |> Enum.filter(fn {account, _balance} -> account_filter.(account) end)
+              |> Map.new()
+            else
+              period_balances
+            end
+
+          # Store both the filtered result and the full balances for next iteration
+          updated_acc =
+            acc
+            |> Map.put(period.label, filtered_balances)
+            |> Map.put(:__previous_balances__, period_balances)
+
+          {rest, updated_acc}
+        end)
+
+      # Remove the internal tracking key from final result
+      final_balances = Map.delete(balances_by_period, :__previous_balances__)
+
+      %{"periods" => periods, "balances" => final_balances}
+    end
+  end
+
+  # Helper to get previous balances from accumulator
+  defp get_previous_balances(acc) do
+    Map.get(acc, :__previous_balances__)
+  end
+
+  # Merge two balance maps by adding values for matching accounts
+  defp merge_balances(bal1, bal2) do
+    Map.merge(bal1, bal2, fn _account, %{value: v1, currency: c}, %{value: v2, currency: _} ->
+      %{value: v1 + v2, currency: c}
+    end)
+  end
+
+  defp calculate_periods(start_date, end_date, group_by) do
+    case group_by do
+      "daily" -> generate_daily_periods(start_date, end_date)
+      "weekly" -> generate_weekly_periods(start_date, end_date)
+      "monthly" -> generate_monthly_periods(start_date, end_date)
+      "quarterly" -> generate_quarterly_periods(start_date, end_date)
+      "yearly" -> generate_yearly_periods(start_date, end_date)
+      _ -> []
+    end
+  end
+
+  defp generate_daily_periods(start_date, end_date) do
+    generate_periods_by_interval(start_date, end_date, 1, fn date ->
+      Date.to_iso8601(date)
+    end)
+  end
+
+  defp generate_weekly_periods(start_date, end_date) do
+    # Find the start of the week for start_date (Monday = 1)
+    week_start = Date.add(start_date, -Date.day_of_week(start_date) + 1)
+    generate_periods_by_interval(week_start, end_date, 7, fn date ->
+      "Week #{Date.to_iso8601(date)}"
+    end)
+  end
+
+  defp generate_monthly_periods(start_date, end_date) do
+    first_day = Date.beginning_of_month(start_date)
+    generate_periods_monthly(first_day, end_date, [])
+  end
+
+  defp generate_periods_monthly(current, end_date, acc) do
+    if Date.compare(current, end_date) == :gt do
+      Enum.reverse(acc)
+    else
+      period_end = Date.end_of_month(current)
+      label = "#{current.year}-#{String.pad_leading(Integer.to_string(current.month), 2, "0")}"
+      period = %{label: label, start_date: current, end_date: period_end}
+      next_month = Date.add(current, Date.days_in_month(current))
+      generate_periods_monthly(next_month, end_date, [period | acc])
+    end
+  end
+
+  defp generate_quarterly_periods(start_date, end_date) do
+    first_day = Date.new!(start_date.year, div(start_date.month - 1, 3) * 3 + 1, 1)
+    generate_periods_quarterly(first_day, end_date, [])
+  end
+
+  defp generate_periods_quarterly(current, end_date, acc) do
+    if Date.compare(current, end_date) == :gt do
+      Enum.reverse(acc)
+    else
+      quarter = div(current.month - 1, 3) + 1
+      period_end_month = current.month + 2
+      period_end = Date.new!(current.year, period_end_month, Date.days_in_month(Date.new!(current.year, period_end_month, 1)))
+      label = "#{current.year} Q#{quarter}"
+      period = %{label: label, start_date: current, end_date: period_end}
+      next_quarter = Date.add(period_end, 1)
+      generate_periods_quarterly(next_quarter, end_date, [period | acc])
+    end
+  end
+
+  defp generate_yearly_periods(start_date, end_date) do
+    generate_periods_yearly(start_date.year, end_date.year, [])
+  end
+
+  defp generate_periods_yearly(current_year, end_year, acc) when current_year > end_year do
+    Enum.reverse(acc)
+  end
+
+  defp generate_periods_yearly(current_year, end_year, acc) do
+    period = %{
+      label: Integer.to_string(current_year),
+      start_date: Date.new!(current_year, 1, 1),
+      end_date: Date.new!(current_year, 12, 31)
+    }
+
+    generate_periods_yearly(current_year + 1, end_year, [period | acc])
+  end
+
+  defp generate_periods_by_interval(current, end_date, days, label_fn, acc \\ [])
+
+  defp generate_periods_by_interval(current, end_date, days, label_fn, acc) do
+    if Date.compare(current, end_date) == :gt do
+      Enum.reverse(acc)
+    else
+      period_end = Date.add(current, days - 1)
+      period = %{label: label_fn.(current), start_date: current, end_date: period_end}
+      next_period = Date.add(current, days)
+      generate_periods_by_interval(next_period, end_date, days, label_fn, [period | acc])
+    end
+  end
 end

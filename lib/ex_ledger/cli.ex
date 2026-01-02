@@ -4,18 +4,18 @@ defmodule ExLedger.CLI do
   alias ExLedger.LedgerParser
 
   @switches [file: :string, help: :boolean, strict: :boolean, empty: :boolean]
-  @aliases [f: :file, h: :help, E: :empty]
+  @aliases [f: :file, h: :help, E: :empty, s: :strict]
   @max_regex_length 256
 
   defp list_command_fns do
     %{
       "accounts" => fn transactions, accounts ->
-        transactions
-        |> LedgerParser.resolve_transaction_aliases(accounts)
-        |> LedgerParser.list_accounts(accounts)
+        LedgerParser.list_accounts(transactions, accounts)
       end,
       "payees" => fn transactions, _accounts -> LedgerParser.list_payees(transactions) end,
-      "commodities" => fn transactions, _accounts -> LedgerParser.list_commodities(transactions) end,
+      "commodities" => fn transactions, _accounts ->
+        LedgerParser.list_commodities(transactions)
+      end,
       "tags" => fn transactions, _accounts -> LedgerParser.list_tags(transactions) end
     }
   end
@@ -23,6 +23,9 @@ defmodule ExLedger.CLI do
   defp command_handlers do
     %{
       "balance" => &handle_balance/1,
+      "register" => &handle_register/1,
+      "print" => &handle_print/1,
+      "check" => &handle_check/1,
       "accounts" => &handle_list_command/1,
       "payees" => &handle_list_command/1,
       "commodities" => &handle_list_command/1,
@@ -78,19 +81,97 @@ defmodule ExLedger.CLI do
   end
 
   defp handle_balance(%{file: file, strict?: strict?, empty?: empty?}) do
-    with_parsed(file, fn transactions, accounts, _contents ->
-      resolved_transactions =
-        ExLedger.LedgerParser.resolve_transaction_aliases(transactions, accounts)
-
+    with_resolved_transactions(file, fn resolved_transactions, accounts, _contents ->
       case maybe_validate_strict(resolved_transactions, accounts, strict?) do
         :ok ->
           resolved_transactions
-          |> ExLedger.LedgerParser.balance()
-          |> ExLedger.LedgerParser.format_balance(empty?)
+          |> LedgerParser.balance()
+          |> LedgerParser.format_balance(empty?)
           |> IO.write()
 
         {:error, {:undeclared_account, account_name}} ->
           halt_error("account '#{account_name}' is used but not declared (strict mode)", 1)
+      end
+    end)
+  end
+
+  defp handle_register(%{file: file, command_args: args}) do
+    account_pattern = first_arg(args)
+
+    with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+      regex = compile_filter_regex(account_pattern)
+
+      resolved_transactions
+      |> LedgerParser.register(regex)
+      |> LedgerParser.format_account_register(account_pattern || "")
+      |> IO.write()
+    end)
+  end
+
+  defp handle_print(%{file: file}) do
+    with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+      resolved_transactions
+      |> LedgerParser.format_transactions()
+      |> IO.write()
+    end)
+  end
+
+  defp handle_check(%{file: file, command_args: args}) do
+    base_dir = Path.dirname(file)
+    filename = Path.basename(file)
+
+    with_resolved_transactions(file, fn resolved_transactions, accounts, contents ->
+      run_checks(resolved_transactions, accounts, contents, base_dir, filename, args, file)
+    end)
+  end
+
+  defp run_checks(resolved_transactions, accounts, contents, base_dir, filename, args, file) do
+    case LedgerParser.expand_includes(contents, base_dir, MapSet.new(), filename) do
+      {:ok, expanded_contents} ->
+        declared_payees = LedgerParser.extract_payee_declarations(expanded_contents)
+        declared_commodities = LedgerParser.extract_commodity_declarations(expanded_contents)
+        declared_tags = LedgerParser.extract_tag_declarations(expanded_contents)
+        check_targets = normalize_check_targets(args)
+
+        run_check_targets(
+          check_targets,
+          resolved_transactions,
+          accounts,
+          expanded_contents,
+          declared_payees,
+          declared_commodities,
+          declared_tags
+        )
+
+      {:error, error} ->
+        handle_parse_error(error, file)
+    end
+  end
+
+  defp run_check_targets(
+         check_targets,
+         resolved_transactions,
+         accounts,
+         expanded_contents,
+         declared_payees,
+         declared_commodities,
+         declared_tags
+       ) do
+    Enum.reduce_while(check_targets, :ok, fn target, :ok ->
+      case run_check(
+             target,
+             resolved_transactions,
+             accounts,
+             expanded_contents,
+             declared_payees,
+             declared_commodities,
+             declared_tags
+           ) do
+        :ok ->
+          {:cont, :ok}
+
+        {:error, {message, status}} ->
+          halt_error(message, status)
       end
     end)
   end
@@ -102,19 +183,19 @@ defmodule ExLedger.CLI do
   end
 
   defp handle_stats(%{file: file}) do
-    with_transactions(file, fn transactions ->
-      transactions
-      |> ExLedger.LedgerParser.stats()
-      |> ExLedger.LedgerParser.format_stats()
+    with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+      resolved_transactions
+      |> LedgerParser.stats()
+      |> LedgerParser.format_stats()
       |> IO.write()
     end)
   end
 
   defp handle_budget(%{file: file}) do
-    with_transactions(file, fn transactions ->
-      transactions
-      |> ExLedger.LedgerParser.budget_report()
-      |> ExLedger.LedgerParser.format_budget_report()
+    with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+      resolved_transactions
+      |> LedgerParser.budget_report()
+      |> LedgerParser.format_budget_report()
       |> IO.write()
     end)
   end
@@ -126,10 +207,10 @@ defmodule ExLedger.CLI do
         _ -> 1
       end
 
-    with_transactions(file, fn transactions ->
-      transactions
-      |> ExLedger.LedgerParser.forecast_balance(months)
-      |> ExLedger.LedgerParser.format_balance()
+    with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+      resolved_transactions
+      |> LedgerParser.forecast_balance(months)
+      |> LedgerParser.format_balance()
       |> IO.write()
     end)
   end
@@ -139,12 +220,12 @@ defmodule ExLedger.CLI do
       base_dir = Path.dirname(file)
       filename = Path.basename(file)
 
-      case ExLedger.LedgerParser.expand_includes(contents, base_dir, MapSet.new(), filename) do
+      case LedgerParser.expand_includes(contents, base_dir, MapSet.new(), filename) do
         {:ok, expanded_contents} ->
           expanded_contents
-          |> ExLedger.LedgerParser.parse_timeclock_entries()
-          |> ExLedger.LedgerParser.timeclock_report()
-          |> ExLedger.LedgerParser.format_timeclock_report()
+          |> LedgerParser.parse_timeclock_entries()
+          |> LedgerParser.timeclock_report()
+          |> LedgerParser.format_timeclock_report()
           |> IO.write()
 
         {:error, error} ->
@@ -160,10 +241,10 @@ defmodule ExLedger.CLI do
       halt_error("select requires a query", 64)
     end
 
-    with_transactions(file, fn transactions ->
-      case ExLedger.LedgerParser.select(transactions, query) do
+    with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+      case LedgerParser.select(resolved_transactions, query) do
         {:ok, fields, rows} ->
-          ExLedger.LedgerParser.format_select(fields, rows)
+          LedgerParser.format_select(fields, rows)
           |> IO.write()
 
         {:error, reason} ->
@@ -175,9 +256,10 @@ defmodule ExLedger.CLI do
   defp handle_xact(%{file: file, command_args: args}) do
     case args do
       [date_string, payee_pattern] ->
-        with_parsed(file, fn transactions, _accounts, _contents ->
+        with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
           with {:ok, date} <- LedgerParser.parse_date(date_string),
-               {:ok, output} <- LedgerParser.build_xact(transactions, date, payee_pattern) do
+               {:ok, output} <-
+                 LedgerParser.build_xact(resolved_transactions, date, payee_pattern) do
             IO.write(output)
           else
             {:error, :invalid_date_format} ->
@@ -194,14 +276,24 @@ defmodule ExLedger.CLI do
   end
 
   defp run_list_command(file, args, list_fun) do
-    with_parsed(file, fn transactions, accounts, _contents ->
-      items = list_fun.(transactions, accounts)
+    with_resolved_transactions(file, fn resolved_transactions, accounts, _contents ->
+      items = list_fun.(resolved_transactions, accounts)
 
       items
       |> filter_list(first_arg(args))
       |> Enum.join("\n")
       |> Kernel.<>("\n")
       |> IO.write()
+    end)
+  end
+
+  defp resolve_transactions(transactions, accounts) do
+    LedgerParser.resolve_transaction_aliases(transactions, accounts)
+  end
+
+  defp with_resolved_transactions(file, fun) do
+    with_parsed(file, fn transactions, accounts, contents ->
+      fun.(resolve_transactions(transactions, accounts), accounts, contents)
     end)
   end
 
@@ -212,7 +304,7 @@ defmodule ExLedger.CLI do
     with {:file_read, {:ok, contents}} <- {:file_read, File.read(file)},
          {:parsed, {:ok, transactions, accounts}} <-
            {:parsed,
-            ExLedger.LedgerParser.parse_ledger_with_includes(
+            LedgerParser.parse_ledger_with_includes(
               contents,
               base_dir,
               MapSet.new(),
@@ -228,20 +320,13 @@ defmodule ExLedger.CLI do
     end
   end
 
-  defp with_transactions(file, fun) do
-    with_parsed(file, fn transactions, _accounts, _contents -> fun.(transactions) end)
-  end
-
   defp maybe_validate_strict(_transactions, _accounts, false), do: :ok
 
   defp maybe_validate_strict(transactions, accounts, true) do
     # Get all account names used in transactions
     used_accounts =
       transactions
-      |> Enum.flat_map(fn transaction ->
-        Enum.map(transaction.postings, & &1.account)
-      end)
-      |> Enum.uniq()
+      |> LedgerParser.list_accounts()
 
     # Get all declared main account names (filter out aliases which have string values)
     declared_accounts =
@@ -249,9 +334,11 @@ defmodule ExLedger.CLI do
       |> Enum.filter(fn {_name, value} -> is_atom(value) end)
       |> Enum.map(fn {name, _type} -> name end)
 
+    declared_set = MapSet.new(declared_accounts)
+
     # Find any undeclared accounts
     case Enum.find(used_accounts, fn account ->
-           account not in declared_accounts
+           not MapSet.member?(declared_set, account)
          end) do
       nil -> :ok
       undeclared -> {:error, {:undeclared_account, undeclared}}
@@ -266,10 +353,13 @@ defmodule ExLedger.CLI do
       "  -f, --file    Path to the ledger file",
       "  -h, --help    Show this message",
       "  -E, --empty   Show accounts whose total is zero",
-      "  --strict      Require all accounts to be declared",
+      "  -s, --strict  Require all accounts to be declared",
       "",
       "Commands:",
       "  balance            Show account balances",
+      "  register [REGEX]   Show postings by account",
+      "  print              Print ledger transactions",
+      "  check [TARGET]     Validate declarations (accounts, payees, commodities, tags)",
       "  accounts [REGEX]   List accounts",
       "  payees [REGEX]     List payees",
       "  commodities [REGEX] List commodities",
@@ -333,10 +423,17 @@ defmodule ExLedger.CLI do
   defp filter_list(items, nil), do: items
 
   defp filter_list(items, pattern) do
-    with {:ok, regex} <- compile_regex(pattern) do
-      Enum.filter(items, fn item -> Regex.match?(regex, item) end)
-    else
-      _ -> items
+    case compile_regex(pattern) do
+      {:ok, regex} ->
+        Enum.filter(items, fn item -> Regex.match?(regex, item) end)
+
+      {:error, :invalid_regex} ->
+        IO.puts(:stderr, "Error: regex pattern is too long (max #{@max_regex_length} characters)")
+        System.halt(1)
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Error: invalid regex pattern '#{pattern}': #{inspect(reason)}")
+        System.halt(1)
     end
   end
 
@@ -348,8 +445,88 @@ defmodule ExLedger.CLI do
     end
   end
 
+  defp compile_filter_regex(nil), do: nil
+
+  defp compile_filter_regex(pattern) do
+    case compile_regex(pattern) do
+      {:ok, regex} ->
+        regex
+
+      {:error, :invalid_regex} ->
+        IO.puts(:stderr, "Error: regex pattern is too long (max #{@max_regex_length} characters)")
+        System.halt(1)
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Error: invalid regex pattern '#{pattern}': #{inspect(reason)}")
+        System.halt(1)
+    end
+  end
+
+  defp normalize_check_targets([]), do: [:commodities, :accounts, :payees, :tags]
+
+  defp normalize_check_targets([target]) do
+    [normalize_check_target(target)]
+  end
+
+  defp normalize_check_targets(_targets) do
+    usage_error("check accepts at most one subcommand")
+  end
+
+  defp normalize_check_target("accounts"), do: :accounts
+  defp normalize_check_target("payees"), do: :payees
+  defp normalize_check_target("commodities"), do: :commodities
+  defp normalize_check_target("tags"), do: :tags
+  defp normalize_check_target(target), do: usage_error("unknown check target #{target}")
+
+  defp run_check(:accounts, transactions, accounts, _contents, _payees, _commodities, _tags) do
+    case LedgerParser.check_accounts(transactions, accounts) do
+      :ok -> :ok
+      {:error, account} -> {:error, {"account \"#{account}\" has not been declared", 1}}
+    end
+  end
+
+  defp run_check(
+         :payees,
+         transactions,
+         _accounts,
+         _contents,
+         declared_payees,
+         _commodities,
+         _tags
+       ) do
+    case LedgerParser.check_payees(transactions, declared_payees) do
+      :ok -> :ok
+      {:error, payee} -> {:error, {"payee \"#{payee}\" has not been declared", 1}}
+    end
+  end
+
+  defp run_check(
+         :commodities,
+         transactions,
+         _accounts,
+         _contents,
+         _payees,
+         declared_commodities,
+         _tags
+       ) do
+    case LedgerParser.check_commodities(transactions, declared_commodities) do
+      :ok -> :ok
+      {:error, commodity} -> {:error, {"commodity \"#{commodity}\" has not been declared", 1}}
+    end
+  end
+
+  defp run_check(:tags, transactions, _accounts, contents, _payees, _commodities, declared_tags) do
+    case LedgerParser.check_tags(transactions, contents, declared_tags) do
+      :ok -> :ok
+      {:error, tag} -> {:error, {"tag \"#{tag}\" has not been declared", 1}}
+    end
+  end
+
   @spec handle_parse_error(LedgerParser.ledger_error(), String.t()) :: no_return()
-  defp handle_parse_error(%{reason: reason, line: line, file: source_file, import_chain: import_chain}, fallback_file) do
+  defp handle_parse_error(
+         %{reason: reason, line: line, file: source_file, import_chain: import_chain},
+         fallback_file
+       ) do
     import_trace =
       if import_chain do
         Enum.map_join(import_chain, "\n", fn {import_file, import_line} ->

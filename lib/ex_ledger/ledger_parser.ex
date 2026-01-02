@@ -26,6 +26,7 @@ defmodule ExLedger.LedgerParser do
 
   import NimbleParsec
 
+  alias ExLedger.EntryFormatter
   alias ExLedger.ParseContext
 
   @type amount :: %{
@@ -794,16 +795,34 @@ defmodule ExLedger.LedgerParser do
         false
 
       matches ->
-        [{start, _len}] = List.last(matches)
-        prefix = String.slice(trimmed, 0, start)
+        [{start, len}] = List.last(matches)
+        amount_str = String.slice(trimmed, start, len)
+
+        # If the amount match includes leading whitespace (from the \s* in the regex),
+        # we need to exclude it and count it as part of the spacing instead.
+        # This ensures we correctly validate the spacing between account and amount.
+        actual_start =
+          case Regex.run(~r/^\s+/, amount_str) do
+            [leading_ws] ->
+              # Amount started with whitespace, adjust start position to after the whitespace
+              start + String.length(leading_ws)
+
+            nil ->
+              # No leading whitespace in the amount match
+              start
+          end
+
+        prefix = String.slice(trimmed, 0, actual_start)
 
         # Check if there's a currency code (1-5 uppercase letters) with optional space and +/- sign
         # before the amount. If so, we need to look before the currency code for the spacing check.
         # Examples: "CHF ", "USD -", "EUR  +", etc.
+        # However, we need to be careful not to match account name parts (like "AHV" in "Kreditor:AHV")
+        # Only match if it's clearly separated (has whitespace after it)
         adjusted_prefix =
-          case Regex.run(~r/([A-Z]{1,5})\s*[-+]?\s*$/, prefix) do
+          case Regex.run(~r/([A-Z]{1,5})\s+[-+]?\s*$/, prefix) do
             [full_match, _currency] ->
-              # Found currency code, check spacing before it (remove the currency and sign)
+              # Found currency code followed by space, check spacing before it
               String.slice(prefix, 0, String.length(prefix) - String.length(full_match))
 
             nil ->
@@ -2195,39 +2214,9 @@ defmodule ExLedger.LedgerParser do
 
       case transaction do
         nil -> {:error, :xact_not_found}
-        _ -> {:ok, format_transaction(transaction, date)}
+        _ -> {:ok, EntryFormatter.format_entry(transaction, date)}
       end
     end
-  end
-
-  defp format_transaction(transaction, date) do
-    header = build_transaction_header(transaction, date)
-
-    postings =
-      Enum.map(transaction.postings, fn posting ->
-        amount = format_posting_amount(posting.amount)
-
-        if amount == "" do
-          "    #{posting.account}"
-        else
-          "    #{posting.account}  #{amount}"
-        end
-      end)
-
-    Enum.join([header | postings], "\n") <> "\n"
-  end
-
-  defp build_transaction_header(transaction, date) do
-    date_string = Calendar.strftime(date, "%Y/%m/%d")
-    code_segment = if transaction.code == "", do: "", else: " (#{transaction.code})"
-    comment_segment = if transaction.comment, do: "  ; #{transaction.comment}", else: ""
-    "#{date_string}#{code_segment} #{transaction.payee}#{comment_segment}"
-  end
-
-  defp format_posting_amount(nil), do: ""
-
-  defp format_posting_amount(%{value: value, currency: currency}) do
-    format_amount_for_currency(value, currency)
   end
 
   defp regular_transaction?(transaction) do
@@ -2836,7 +2825,7 @@ defmodule ExLedger.LedgerParser do
     transactions
     |> regular_transactions()
     |> Enum.map_join("\n\n", fn transaction ->
-      String.trim_trailing(format_transaction(transaction, transaction.date))
+      String.trim_trailing(EntryFormatter.format_entry(transaction))
     end)
     |> Kernel.<>("\n")
   end
@@ -3141,7 +3130,8 @@ defmodule ExLedger.LedgerParser do
     end
   end
 
-  defp format_amount_for_currency(value, currency) do
+  @doc false
+  def format_amount_for_currency(value, currency) do
     sign = if value < 0, do: "-", else: ""
     abs_value = abs(value)
     formatted = :erlang.float_to_binary(abs_value, decimals: 2)

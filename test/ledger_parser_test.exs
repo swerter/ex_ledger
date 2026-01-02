@@ -1,6 +1,7 @@
 defmodule ExLedger.LedgerParserTest do
   use ExUnit.Case
   alias ExLedger.LedgerParser
+  alias ExLedger.TestHelpers
 
   describe "parse_transaction/1 - structural validation" do
     test "requires date at start of transaction" do
@@ -49,7 +50,7 @@ defmodule ExLedger.LedgerParserTest do
        Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
       assert length(transaction.postings) == 2
     end
 
@@ -60,7 +61,7 @@ defmodule ExLedger.LedgerParserTest do
         Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
       assert length(transaction.postings) == 2
     end
 
@@ -71,14 +72,14 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
       assert length(transaction.postings) == 2
     end
 
     test "accepts postings with tab indentation" do
       input = "2009/11/01 Panera Bread\n\tExpenses:Food               $4.50\n\tAssets:Checking\n"
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
       assert length(transaction.postings) == 2
     end
 
@@ -119,10 +120,10 @@ defmodule ExLedger.LedgerParserTest do
           Income:Salary
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
       [posting1, posting2] = transaction.postings
-      assert posting1.amount == %{value: -10.00, currency: "CHF"}
-      assert posting2.amount == %{value: 10.00, currency: "CHF"}
+      assert posting1.amount == %{value: -10.00, currency: "CHF", currency_position: :leading}
+      assert posting2.amount == %{value: 10.00, currency: "CHF", currency_position: :leading}
     end
 
     test "accepts 2 or more spaces between account and amount" do
@@ -132,8 +133,13 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
-      assert Enum.at(transaction.postings, 0).amount == %{value: 4.50, currency: "$"}
+      transaction = parse_transaction!(input)
+
+      assert Enum.at(transaction.postings, 0).amount == %{
+               value: 4.50,
+               currency: "$",
+               currency_position: :leading
+             }
     end
 
     test "rejects tab character before amount (insufficient_spacing)" do
@@ -157,7 +163,7 @@ defmodule ExLedger.LedgerParserTest do
 
       # Multi-currency transaction - allowed even though currencies don't balance
       # (exchange rate conversion is handled outside the parser)
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
       assert length(transaction.postings) == 2
     end
 
@@ -171,12 +177,12 @@ defmodule ExLedger.LedgerParserTest do
 
       # Multi-currency transaction - allowed even though currencies don't balance
       # (exchange rate conversion is handled outside the parser)
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
       [posting1, posting2] = transaction.postings
       assert posting1.account == "6 Other expenses:6570 Computer:Development:Webapp"
-      assert posting1.amount == %{value: 225.96, currency: "CHF"}
+      assert posting1.amount == %{value: 225.96, currency: "CHF", currency_position: :leading}
       assert posting2.account == "1 Assets:10 Turnover:1022 Wise"
-      assert posting2.amount == %{value: -246.47, currency: "USD"}
+      assert posting2.amount == %{value: -246.47, currency: "USD", currency_position: :leading}
     end
 
     test "rejects insufficient spacing with long account name" do
@@ -197,11 +203,11 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       [posting1, posting2] = transaction.postings
       assert posting1.account == "Expenses:Home Improvement"
-      assert posting1.amount == %{value: 125.50, currency: "$"}
+      assert posting1.amount == %{value: 125.50, currency: "$", currency_position: :leading}
       assert posting2.account == "Assets:Checking"
     end
 
@@ -212,11 +218,11 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking Account
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       [posting1, posting2] = transaction.postings
       assert posting1.account == "Liabilities:Credit Card Account"
-      assert posting1.amount == %{value: 50.00, currency: "$"}
+      assert posting1.amount == %{value: 50.00, currency: "$", currency_position: :leading}
       assert posting2.account == "Assets:Checking Account"
     end
   end
@@ -229,7 +235,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       assert transaction.date == ~D[2009-10-29]
       assert transaction.code == "XFER"
@@ -239,11 +245,11 @@ defmodule ExLedger.LedgerParserTest do
       [posting1, posting2] = transaction.postings
 
       assert posting1.account == "Expenses:Food"
-      assert posting1.amount == %{value: 4.50, currency: "$"}
+      assert posting1.amount == %{value: 4.50, currency: "$", currency_position: :leading}
 
       assert posting2.account == "Assets:Checking"
       # Should be automatically calculated as negative of first posting
-      assert posting2.amount == %{value: -4.50, currency: "$"}
+      assert posting2.amount == %{value: -4.50, currency: "$", currency_position: :leading}
     end
 
     test "parses transaction with DEP code and income deposit" do
@@ -253,7 +259,7 @@ defmodule ExLedger.LedgerParserTest do
           Income
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       assert transaction.date == ~D[2009-10-30]
       assert transaction.code == "DEP"
@@ -263,11 +269,11 @@ defmodule ExLedger.LedgerParserTest do
       [posting1, posting2] = transaction.postings
 
       assert posting1.account == "Assets:Checking"
-      assert posting1.amount == %{value: 20.00, currency: "$"}
+      assert posting1.amount == %{value: 20.00, currency: "$", currency_position: :leading}
 
       assert posting2.account == "Income"
       # Should be automatically calculated as negative of first posting
-      assert posting2.amount == %{value: -20.00, currency: "$"}
+      assert posting2.amount == %{value: -20.00, currency: "$", currency_position: :leading}
     end
 
     test "parses transaction with long hexadecimal code" do
@@ -277,7 +283,7 @@ defmodule ExLedger.LedgerParserTest do
           Liabilities:Credit Card
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       assert transaction.date == ~D[2009-10-31]
       assert transaction.code == "559385768438A8D7"
@@ -287,11 +293,11 @@ defmodule ExLedger.LedgerParserTest do
       [posting1, posting2] = transaction.postings
 
       assert posting1.account == "Expenses:Food"
-      assert posting1.amount == %{value: 4.50, currency: "$"}
+      assert posting1.amount == %{value: 4.50, currency: "$", currency_position: :leading}
 
       assert posting2.account == "Liabilities:Credit Card"
       # Should be automatically calculated as negative of first posting
-      assert posting2.amount == %{value: -4.50, currency: "$"}
+      assert posting2.amount == %{value: -4.50, currency: "$", currency_position: :leading}
     end
 
     test "parses transaction with auxiliary date and cleared state" do
@@ -301,7 +307,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       assert transaction.date == ~D[2009-10-29]
       assert transaction.aux_date == ~D[2009-10-28]
@@ -317,7 +323,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       assert transaction.date == ~D[2009-10-29]
       assert transaction.aux_date == nil
@@ -333,7 +339,7 @@ defmodule ExLedger.LedgerParserTest do
           Income:Misc
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
       assert transaction.kind == :automated
       assert transaction.predicate == "expr true"
       assert length(transaction.postings) == 2
@@ -346,7 +352,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
       assert transaction.kind == :periodic
       assert transaction.period == "Monthly"
       assert length(transaction.postings) == 2
@@ -359,14 +365,14 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       assert transaction.date == ~D[2009-10-29]
       assert transaction.code == ""
       assert transaction.payee == "Panera Bread"
 
       [_posting1, posting2] = transaction.postings
-      assert posting2.amount == %{value: -4.50, currency: "$"}
+      assert posting2.amount == %{value: -4.50, currency: "$", currency_position: :leading}
     end
 
     test "parses transaction with both amounts specified" do
@@ -376,12 +382,12 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking            -$4.50
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       [posting1, posting2] = transaction.postings
 
-      assert posting1.amount == %{value: 4.50, currency: "$"}
-      assert posting2.amount == %{value: -4.50, currency: "$"}
+      assert posting1.amount == %{value: 4.50, currency: "$", currency_position: :leading}
+      assert posting2.amount == %{value: -4.50, currency: "$", currency_position: :leading}
     end
 
     test "parses transaction with payee and comment" do
@@ -391,7 +397,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       assert transaction.date == ~D[2009-11-01]
       assert transaction.payee == "Panera Bread"
@@ -409,7 +415,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       assert transaction.date == ~D[2009-11-01]
       assert transaction.payee == "Panera Bread"
@@ -437,7 +443,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       assert transaction.date == ~D[2009-11-01]
       assert transaction.payee == "Panera Bread"
@@ -462,7 +468,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       [posting1, _posting2] = transaction.postings
 
@@ -479,7 +485,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       [posting1, _posting2] = transaction.postings
 
@@ -498,7 +504,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       [posting1, _posting2] = transaction.postings
       assert posting1.metadata == %{"Type" => "Coffee"}
@@ -512,11 +518,11 @@ defmodule ExLedger.LedgerParserTest do
           Income:Salary
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       [posting1, posting2] = transaction.postings
-      assert posting1.amount == %{value: 100.00, currency: "CHF"}
-      assert posting2.amount == %{value: -100.00, currency: "CHF"}
+      assert posting1.amount == %{value: 100.00, currency: "CHF", currency_position: :trailing}
+      assert posting2.amount == %{value: -100.00, currency: "CHF", currency_position: :trailing}
     end
 
     test "parses transaction at sign in description" do
@@ -527,7 +533,7 @@ defmodule ExLedger.LedgerParserTest do
         1 Assets:10 Turnover:1022 Abb                          USD -136.30
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       assert transaction.date == ~D[2025-01-10]
       assert transaction.code == ""
@@ -537,11 +543,11 @@ defmodule ExLedger.LedgerParserTest do
       [posting1, posting2] = transaction.postings
 
       assert posting1.account == "5 Personal:58 Other:5880 Other Personal expenses"
-      assert posting1.amount == %{value: 60.18, currency: "CHF"}
+      assert posting1.amount == %{value: 60.18, currency: "CHF", currency_position: :leading}
 
       assert posting2.account == "1 Assets:10 Turnover:1022 Abb"
       # Should be automatically calculated as negative of first posting
-      assert posting2.amount == %{value: -136.30, currency: "USD"}
+      assert posting2.amount == %{value: -136.30, currency: "USD", currency_position: :leading}
 
       balance_should_txt = """
                USD -136.30  1 Assets:10 Turnover:1022 Abb
@@ -567,7 +573,7 @@ defmodule ExLedger.LedgerParserTest do
         5 Expenses:Training   CHF 66.6
       """
 
-      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      transaction = parse_transaction!(input)
 
       assert transaction.date == ~D[2024-07-21]
       assert transaction.payee == "Paypal payment from Tilted Windmill Press"
@@ -576,13 +582,13 @@ defmodule ExLedger.LedgerParserTest do
       [posting1, posting2, posting3] = transaction.postings
 
       assert posting1.account == "1 Assets:Receivables:Paypal:USD"
-      assert posting1.amount == %{value: -75.0, currency: "USD"}
+      assert posting1.amount == %{value: -75.0, currency: "USD", currency_position: :leading}
 
       assert posting2.account == "6 Expenses:Bank:Fees"
-      assert posting2.amount == %{value: 8.4, currency: "USD"}
+      assert posting2.amount == %{value: 8.4, currency: "USD", currency_position: :leading}
 
       assert posting3.account == "5 Expenses:Training"
-      assert posting3.amount == %{value: 66.6, currency: "CHF"}
+      assert posting3.amount == %{value: 66.6, currency: "CHF", currency_position: :leading}
     end
   end
 
@@ -603,16 +609,16 @@ defmodule ExLedger.LedgerParserTest do
     test "parses posting with amount" do
       input = "    Expenses:Food               $4.50"
 
-      assert {:ok, posting} = LedgerParser.parse_posting(input)
+      posting = parse_posting!(input)
 
       assert posting.account == "Expenses:Food"
-      assert posting.amount == %{value: 4.50, currency: "$"}
+      assert posting.amount == %{value: 4.50, currency: "$", currency_position: :leading}
     end
 
     test "parses posting without amount (to be auto-balanced)" do
       input = "    Assets:Checking"
 
-      assert {:ok, posting} = LedgerParser.parse_posting(input)
+      posting = parse_posting!(input)
 
       assert posting.account == "Assets:Checking"
       assert posting.amount == nil
@@ -621,33 +627,33 @@ defmodule ExLedger.LedgerParserTest do
     test "parses posting with negative amount" do
       input = "    Assets:Checking            -$4.50"
 
-      assert {:ok, posting} = LedgerParser.parse_posting(input)
+      posting = parse_posting!(input)
 
       assert posting.account == "Assets:Checking"
-      assert posting.amount == %{value: -4.50, currency: "$"}
+      assert posting.amount == %{value: -4.50, currency: "$", currency_position: :leading}
     end
 
     test "parses posting with multi-level account" do
       input = "    Liabilities:Credit Card     $4.50"
 
-      assert {:ok, posting} = LedgerParser.parse_posting(input)
+      posting = parse_posting!(input)
 
       assert posting.account == "Liabilities:Credit Card"
-      assert posting.amount == %{value: 4.50, currency: "$"}
+      assert posting.amount == %{value: 4.50, currency: "$", currency_position: :leading}
     end
 
     test "parses posting with trailing currency code" do
       input = "    Assets:Cash               10.00 CHF"
 
-      assert {:ok, posting} = LedgerParser.parse_posting(input)
+      posting = parse_posting!(input)
 
       assert posting.account == "Assets:Cash"
-      assert posting.amount == %{value: 10.00, currency: "CHF"}
+      assert posting.amount == %{value: 10.00, currency: "CHF", currency_position: :trailing}
     end
 
     test "parses posting with different amounts" do
-      assert {:ok, posting} = LedgerParser.parse_posting("    Income    $20.00")
-      assert posting.amount == %{value: 20.00, currency: "$"}
+      posting = parse_posting!("    Income    $20.00")
+      assert posting.amount == %{value: 20.00, currency: "$", currency_position: :leading}
     end
   end
 
@@ -750,9 +756,22 @@ defmodule ExLedger.LedgerParserTest do
   end
 
   describe "parse_amount/1" do
+    test "parses bare-number amounts without currency" do
+      # Bare numbers should have nil currency, not default to "$"
+      assert {:ok, %{value: 100.0, currency: nil}} = LedgerParser.parse_amount("100")
+      assert {:ok, %{value: 42.50, currency: nil}} = LedgerParser.parse_amount("42.50")
+      assert {:ok, %{value: -25.75, currency: nil}} = LedgerParser.parse_amount("-25.75")
+
+      assert {:ok, amount} = LedgerParser.parse_amount("100")
+      assert amount.currency_position == nil
+    end
+
     test "parses dollar amounts with cents" do
       assert {:ok, %{value: 4.50, currency: "$"}} = LedgerParser.parse_amount("$4.50")
       assert {:ok, %{value: 20.00, currency: "$"}} = LedgerParser.parse_amount("$20.00")
+
+      assert {:ok, amount} = LedgerParser.parse_amount("$4.50")
+      assert amount.currency_position == :leading
     end
 
     test "parses negative dollar amounts" do
@@ -783,6 +802,9 @@ defmodule ExLedger.LedgerParserTest do
       assert {:ok, %{value: 10.0, currency: "CHF"}} = LedgerParser.parse_amount("10 CHF")
       assert {:ok, %{value: -10.5, currency: "USD"}} = LedgerParser.parse_amount("-10.5 USD")
       assert {:ok, %{value: 75.0, currency: "EUR"}} = LedgerParser.parse_amount("75 EUR")
+
+      assert {:ok, amount} = LedgerParser.parse_amount("10 CHF")
+      assert amount.currency_position == :trailing
     end
 
     test "parses amounts without decimal point" do
@@ -794,36 +816,54 @@ defmodule ExLedger.LedgerParserTest do
     test "returns error for invalid amounts" do
       assert {:error, _reason} = LedgerParser.parse_amount("invalid")
       assert {:error, _reason} = LedgerParser.parse_amount("")
+      assert {:error, _reason} = LedgerParser.parse_amount("USD 10 CHF")
     end
   end
 
   describe "balance_postings/1" do
     test "balances postings when second amount is nil" do
       postings = [
-        %{account: "Expenses:Food", amount: %{value: 4.50, currency: "$"}},
+        %{
+          account: "Expenses:Food",
+          amount: %{value: 4.50, currency: "$", currency_position: :leading}
+        },
         %{account: "Assets:Checking", amount: nil}
       ]
 
       result = LedgerParser.balance_postings(postings)
 
-      assert Enum.at(result, 1).amount == %{value: -4.50, currency: "$"}
+      assert Enum.at(result, 1).amount == %{
+               value: -4.50,
+               currency: "$",
+               currency_position: :leading
+             }
     end
 
     test "balances postings when first amount is nil" do
       postings = [
         %{account: "Assets:Checking", amount: nil},
-        %{account: "Income", amount: %{value: 20.00, currency: "$"}}
+        %{account: "Income", amount: %{value: 20.00, currency: "$", currency_position: :leading}}
       ]
 
       result = LedgerParser.balance_postings(postings)
 
-      assert Enum.at(result, 0).amount == %{value: -20.00, currency: "$"}
+      assert Enum.at(result, 0).amount == %{
+               value: -20.00,
+               currency: "$",
+               currency_position: :leading
+             }
     end
 
     test "does not modify postings when all amounts are specified" do
       postings = [
-        %{account: "Expenses:Food", amount: %{value: 4.50, currency: "$"}},
-        %{account: "Assets:Checking", amount: %{value: -4.50, currency: "$"}}
+        %{
+          account: "Expenses:Food",
+          amount: %{value: 4.50, currency: "$", currency_position: :leading}
+        },
+        %{
+          account: "Assets:Checking",
+          amount: %{value: -4.50, currency: "$", currency_position: :leading}
+        }
       ]
 
       result = LedgerParser.balance_postings(postings)
@@ -833,14 +873,36 @@ defmodule ExLedger.LedgerParserTest do
 
     test "balances with multiple postings (one nil)" do
       postings = [
-        %{account: "Expenses:Food", amount: %{value: 3.00, currency: "$"}},
-        %{account: "Expenses:Drink", amount: %{value: 1.50, currency: "$"}},
+        %{
+          account: "Expenses:Food",
+          amount: %{value: 3.00, currency: "$", currency_position: :leading}
+        },
+        %{
+          account: "Expenses:Drink",
+          amount: %{value: 1.50, currency: "$", currency_position: :leading}
+        },
         %{account: "Assets:Checking", amount: nil}
       ]
 
       result = LedgerParser.balance_postings(postings)
 
-      assert Enum.at(result, 2).amount == %{value: -4.50, currency: "$"}
+      assert Enum.at(result, 2).amount == %{
+               value: -4.50,
+               currency: "$",
+               currency_position: :leading
+             }
+    end
+
+    test "does not auto-balance multi-currency postings with a missing amount" do
+      postings = [
+        %{account: "Assets:Cash", amount: %{value: 10.00, currency: "USD"}},
+        %{account: "Expenses:Fees", amount: %{value: -5.00, currency: "CHF"}},
+        %{account: "Equity:Opening", amount: nil}
+      ]
+
+      result = LedgerParser.balance_postings(postings)
+
+      assert Enum.at(result, 2).amount == nil
     end
   end
 
@@ -1091,6 +1153,18 @@ defmodule ExLedger.LedgerParserTest do
       }
 
       assert :ok = LedgerParser.validate_transaction(transaction)
+    end
+
+    test "returns error when multiple postings are missing amounts" do
+      transaction = %{
+        postings: [
+          %{account: "Assets:Cash", amount: nil},
+          %{account: "Expenses:Food", amount: nil},
+          %{account: "Equity:Opening", amount: %{value: 5.00, currency: "$"}}
+        ]
+      }
+
+      assert {:error, :multiple_nil_amounts} = LedgerParser.validate_transaction(transaction)
     end
 
     test "returns error for unbalanced transaction" do
@@ -1567,17 +1641,7 @@ defmodule ExLedger.LedgerParserTest do
 
   describe "parse_ledger_with_includes/2 - file resolution" do
     setup do
-      # Create a temporary directory for test files
-      test_dir =
-        System.tmp_dir!() |> Path.join("ex_ledger_test_#{:erlang.unique_integer([:positive])}")
-
-      File.mkdir_p!(test_dir)
-
-      on_exit(fn ->
-        File.rm_rf!(test_dir)
-      end)
-
-      {:ok, test_dir: test_dir}
+      {:ok, test_dir: TestHelpers.tmp_dir!("ex_ledger_test")}
     end
 
     test "reads and parses included file", %{test_dir: test_dir} do
@@ -1736,6 +1800,47 @@ defmodule ExLedger.LedgerParserTest do
                LedgerParser.parse_ledger_with_includes(content, test_dir)
     end
 
+    test "rejects symlinks pointing outside base directory", %{test_dir: test_dir} do
+      # Create a file outside the test directory
+      outside_dir = TestHelpers.tmp_dir!("outside_ledger_test")
+
+      outside_file = Path.join(outside_dir, "outside.ledger")
+
+      File.write!(outside_file, """
+      2009/01/01 Outside Transaction
+          Assets:Checking            $100.00
+          Equity:Opening Balances
+      """)
+
+      # Create a symlink inside test_dir pointing to outside file
+      symlink_path = Path.join(test_dir, "symlink.ledger")
+
+      # Create symlink (this might fail on some systems without permissions)
+      case File.ln_s(outside_file, symlink_path) do
+        :ok ->
+          # Create main file that tries to include via symlink
+          main_file = Path.join(test_dir, "main.ledger")
+
+          File.write!(main_file, """
+          include symlink.ledger
+
+          2009/10/29 Local Transaction
+              Expenses:Food               $4.50
+              Assets:Checking
+          """)
+
+          {:ok, content} = File.read(main_file)
+
+          # Should reject because symlink points outside base_dir
+          assert {:error, {:include_outside_base, "symlink.ledger"}} =
+                   LedgerParser.parse_ledger_with_includes(content, test_dir)
+
+        {:error, _} ->
+          # Skip test if symlinking is not supported
+          :ok
+      end
+    end
+
     test "strips comments from include lines", %{test_dir: test_dir} do
       included_file = Path.join(test_dir, "opening_balances.ledger")
 
@@ -1879,8 +1984,19 @@ defmodule ExLedger.LedgerParserTest do
 
       {:ok, content} = File.read(main_file)
 
-      assert {:error, %{reason: :missing_payee, line: 1, file: "bad.ledger", import_chain: [{"main.ledger", 1}]}} =
-               LedgerParser.parse_ledger_with_includes(content, test_dir, MapSet.new(), "main.ledger")
+      assert {:error,
+              %{
+                reason: :missing_payee,
+                line: 1,
+                file: "bad.ledger",
+                import_chain: [{"main.ledger", 1}]
+              }} =
+               LedgerParser.parse_ledger_with_includes(
+                 content,
+                 test_dir,
+                 MapSet.new(),
+                 "main.ledger"
+               )
     end
   end
 
@@ -1996,6 +2112,122 @@ defmodule ExLedger.LedgerParserTest do
 
       assert Enum.at(resolved, 0).postings |> Enum.at(0) |> Map.get(:account) == "Assets:Checking"
       assert Enum.at(resolved, 0).postings |> Enum.at(1) |> Map.get(:account) == "Expenses:Food"
+    end
+
+    test "balance resolves aliases before calculating account balances" do
+      input = """
+      account Assets:Checking
+              alias checking
+      account Expenses:Food
+              alias food
+
+      2024/01/01 Grocery Store
+          food                        $50.00
+          checking
+      """
+
+      {:ok, transactions, accounts} =
+        LedgerParser.parse_ledger_with_includes(input, ".", MapSet.new(), nil)
+
+      # Resolve aliases before calculating balance
+      resolved = LedgerParser.resolve_transaction_aliases(transactions, accounts)
+      balances = LedgerParser.balance(resolved)
+
+      # Should have canonical account names, not aliases
+      assert Map.has_key?(balances, "Assets:Checking")
+      assert Map.has_key?(balances, "Expenses:Food")
+      refute Map.has_key?(balances, "checking")
+      refute Map.has_key?(balances, "food")
+
+      assert balances["Expenses:Food"].value == 50.0
+      assert balances["Assets:Checking"].value == -50.0
+    end
+
+    test "stats resolves aliases before calculating statistics" do
+      input = """
+      account Assets:Checking
+              alias checking
+      account Expenses:Food
+              alias food
+
+      2024/01/01 Grocery Store
+          food                        $50.00
+          checking
+
+      2024/01/02 Restaurant
+          food                        $25.00
+          checking
+      """
+
+      {:ok, transactions, accounts} =
+        LedgerParser.parse_ledger_with_includes(input, ".", MapSet.new(), nil)
+
+      # Without resolving aliases, stats would count "food" and "checking" as separate accounts
+      resolved = LedgerParser.resolve_transaction_aliases(transactions, accounts)
+      stats = LedgerParser.stats(resolved)
+
+      # Should count only 2 accounts (canonical names), not 4 (aliases + canonical)
+      # Note: stats returns atom keys, and the key is :unique_accounts
+      assert stats[:unique_accounts] == 2
+    end
+
+    test "list_accounts shows canonical names when aliases are used in transactions" do
+      input = """
+      account Assets:Checking
+              alias checking
+      account Expenses:Food
+              alias food
+
+      2024/01/01 Grocery Store
+          food                        $50.00
+          checking
+      """
+
+      {:ok, transactions, accounts} =
+        LedgerParser.parse_ledger_with_includes(input, ".", MapSet.new(), nil)
+
+      # Resolve aliases before listing
+      resolved = LedgerParser.resolve_transaction_aliases(transactions, accounts)
+      account_list = LedgerParser.list_accounts(resolved, accounts)
+
+      # Should show canonical names, not aliases
+      assert "Assets:Checking" in account_list
+      assert "Expenses:Food" in account_list
+      refute "checking" in account_list
+      refute "food" in account_list
+    end
+
+    test "budget_report resolves aliases before calculating budget" do
+      input = """
+      account Expenses:Rent
+              alias rent
+      account Income:Salary
+              alias salary
+
+      ~ Monthly
+          rent                        $1000.00
+          salary
+
+      2024/01/01 Paycheck
+          salary                      $3000.00
+          Assets:Checking
+      """
+
+      {:ok, transactions, accounts} =
+        LedgerParser.parse_ledger_with_includes(input, ".", MapSet.new(), nil)
+
+      # Resolve aliases before budget calculation
+      resolved = LedgerParser.resolve_transaction_aliases(transactions, accounts)
+      budget_list = LedgerParser.budget_report(resolved)
+
+      # budget_report returns a list of maps, extract account names
+      budget_accounts = Enum.map(budget_list, & &1.account) |> Enum.uniq()
+
+      # Should use canonical account names
+      assert "Expenses:Rent" in budget_accounts
+      assert "Income:Salary" in budget_accounts
+      refute "rent" in budget_accounts
+      refute "salary" in budget_accounts
     end
 
     test "handles mixed old and new account declaration formats" do
@@ -2150,8 +2382,14 @@ defmodule ExLedger.LedgerParserTest do
           assert length(transaction.postings) == 3
 
           # Check auto-balanced posting
-          equity_posting = Enum.find(transaction.postings, fn p -> p.account == "Equity:OpeningBalances" end)
-          assert equity_posting.amount == %{value: -15000.00, currency: "$"}
+          equity_posting =
+            Enum.find(transaction.postings, fn p -> p.account == "Equity:OpeningBalances" end)
+
+          assert equity_posting.amount == %{
+                   value: -15_000.00,
+                   currency: "$",
+                   currency_position: :leading
+                 }
 
         {:error, reason} ->
           flunk("Expected successful parse but got error: #{inspect(reason)}")
@@ -2176,8 +2414,14 @@ defmodule ExLedger.LedgerParserTest do
           assert length(transaction.postings) == 3
 
           # Check auto-balanced posting
-          equity_posting = Enum.find(transaction.postings, fn p -> p.account == "Equity:OpeningBalances" end)
-          assert equity_posting.amount == %{value: -15000.00, currency: "$"}
+          equity_posting =
+            Enum.find(transaction.postings, fn p -> p.account == "Equity:OpeningBalances" end)
+
+          assert equity_posting.amount == %{
+                   value: -15_000.00,
+                   currency: "$",
+                   currency_position: :leading
+                 }
 
         {:error, reason} ->
           flunk("Expected successful parse but got error: #{inspect(reason)}")
@@ -2218,11 +2462,19 @@ defmodule ExLedger.LedgerParserTest do
           assert length(t1.postings) == 3
 
           # Check auto-balanced posting
-          equity_posting = Enum.find(t1.postings, fn p -> p.account == "Equity:OpeningBalances" end)
-          assert equity_posting.amount == %{value: -15000.00, currency: "$"}
+          equity_posting =
+            Enum.find(t1.postings, fn p -> p.account == "Equity:OpeningBalances" end)
+
+          assert equity_posting.amount == %{
+                   value: -15_000.00,
+                   currency: "$",
+                   currency_position: :leading
+                 }
 
         {:error, {reason, line, file}} ->
-          flunk("Expected successful parse but got error: #{inspect(reason)} at line #{line} in #{file}")
+          flunk(
+            "Expected successful parse but got error: #{inspect(reason)} at line #{line} in #{file}"
+          )
 
         {:error, error} ->
           flunk("Expected successful parse but got error: #{inspect(error)}")
@@ -2293,7 +2545,10 @@ defmodule ExLedger.LedgerParserTest do
       {:ok, transactions: transactions, accounts: accounts}
     end
 
-    test "lists accounts including declarations", %{transactions: transactions, accounts: accounts} do
+    test "lists accounts including declarations", %{
+      transactions: transactions,
+      accounts: accounts
+    } do
       result = LedgerParser.list_accounts(transactions, accounts)
 
       assert result == [
@@ -2485,6 +2740,47 @@ defmodule ExLedger.LedgerParserTest do
       report = LedgerParser.timeclock_report(entries)
 
       assert_in_delta report["Work:Project"], 8.5, 0.01
+    end
+
+    test "warns about unclosed timeclock entries" do
+      input = """
+      i 2024/03/01 09:00:00 Work:Project  Client A
+      i 2024/03/01 10:00:00 Work:Admin  Admin tasks
+      """
+
+      # Capture stderr to check for warning
+      output =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          entries = LedgerParser.parse_timeclock_entries(input)
+          # No checkout, so no completed entries
+          assert Enum.empty?(entries)
+        end)
+
+      # Should warn about 2 unclosed entries
+      assert output =~ "Warning: 2 unclosed timeclock check-in(s)"
+      assert output =~ "Work:Project"
+      assert output =~ "Work:Admin"
+    end
+
+    test "handles multiple unclosed entries" do
+      input = """
+      i 2024/03/01 09:00:00 Work:Project  Client A
+      i 2024/03/01 10:00:00 Work:Admin  Admin tasks
+      i 2024/03/01 11:00:00 Work:Meeting  Team meeting
+      """
+
+      output =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          entries = LedgerParser.parse_timeclock_entries(input)
+          # No checkout, so no completed entries
+          assert Enum.empty?(entries)
+        end)
+
+      # Should warn about 3 unclosed entries
+      assert output =~ "Warning: 3 unclosed timeclock check-in(s)"
+      assert output =~ "Work:Project"
+      assert output =~ "Work:Admin"
+      assert output =~ "Work:Meeting"
     end
   end
 
@@ -2926,6 +3222,20 @@ defmodule ExLedger.LedgerParserTest do
       dec_balances = balances["2024-12"]
       assert dec_balances["Expenses:Daily"].value == 3650.0
       assert dec_balances["Assets:Cash"].value == -3650.0
+    end
+  end
+
+  defp parse_transaction!(input) do
+    case LedgerParser.parse_transaction(input) do
+      {:ok, transaction} -> transaction
+      {:error, reason} -> flunk("Expected transaction to parse, got: #{inspect(reason)}")
+    end
+  end
+
+  defp parse_posting!(input) do
+    case LedgerParser.parse_posting(input) do
+      {:ok, posting} -> posting
+      {:error, reason} -> flunk("Expected posting to parse, got: #{inspect(reason)}")
     end
   end
 end

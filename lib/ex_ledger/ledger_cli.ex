@@ -15,16 +15,11 @@ defmodule ExLedger.LedgerCLI do
   @spec run([String.t()], keyword()) :: {:ok, String.t()} | {:error, cmd_error()}
   def run(args, opts \\ []) when is_list(args) and is_list(opts) do
     ledger_bin = Keyword.get(opts, :ledger_bin, @default_ledger_bin)
-    cmd_opts = Keyword.get(opts, :cmd_opts, [])
+    cmd_opts = build_cmd_opts(opts)
 
-    {output, status} =
-      System.cmd(ledger_bin, args, Keyword.merge([stderr_to_stdout: true], cmd_opts))
-
-    if status == 0 do
-      {:ok, output}
-    else
-      {:error, {status, output}}
-    end
+    ledger_bin
+    |> System.cmd(args, cmd_opts)
+    |> format_cmd_result()
   end
 
   @doc """
@@ -40,4 +35,11 @@ defmodule ExLedger.LedgerCLI do
       when is_binary(file) and is_binary(command) and is_list(args) and is_list(opts) do
     run(["-f", file, command | args], opts)
   end
+
+  defp build_cmd_opts(opts) do
+    Keyword.merge([stderr_to_stdout: true], Keyword.get(opts, :cmd_opts, []))
+  end
+
+  defp format_cmd_result({output, 0}), do: {:ok, output}
+  defp format_cmd_result({output, status}), do: {:error, {status, output}}
 end

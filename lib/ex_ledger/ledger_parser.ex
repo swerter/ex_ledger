@@ -28,7 +28,11 @@ defmodule ExLedger.LedgerParser do
 
   alias ExLedger.ParseContext
 
-  @type amount :: %{value: float(), currency: String.t()}
+  @type amount :: %{
+          value: float(),
+          currency: String.t() | nil,
+          currency_position: :leading | :trailing | nil
+        }
   @type posting :: %{
           account: String.t(),
           amount: amount() | nil,
@@ -46,7 +50,9 @@ defmodule ExLedger.LedgerParser do
           comment: String.t() | nil,
           predicate: String.t() | nil,
           period: String.t() | nil,
-          postings: [posting()]
+          postings: [posting()],
+          source_file: String.t() | nil,
+          source_line: non_neg_integer() | nil
         }
   @type account_declaration :: %{
           name: String.t(),
@@ -251,6 +257,7 @@ defmodule ExLedger.LedgerParser do
     |> optional(sign)
     |> ignore(optional_whitespace)
     |> concat(amount_number)
+    |> post_traverse({:tag_currency_position, [:leading]})
     |> reduce({:to_amount, []})
 
   amount_trailing_currency =
@@ -258,6 +265,7 @@ defmodule ExLedger.LedgerParser do
     |> concat(amount_number)
     |> ignore(optional_whitespace)
     |> concat(currency)
+    |> post_traverse({:tag_currency_position, [:trailing]})
     |> reduce({:to_amount, []})
 
   # Bare number without currency (e.g., just "0")
@@ -438,35 +446,46 @@ defmodule ExLedger.LedgerParser do
     |> String.to_integer()
   end
 
+  defp tag_currency_position(rest, acc, context, _line, _offset, position) do
+    {rest, acc ++ [{:currency_position, position}], context}
+  end
+
   @spec to_amount(keyword()) :: amount()
   defp to_amount(parts) do
     has_negative = Enum.member?(parts, :negative)
     sign = if has_negative, do: -1, else: 1
+    # Don't default to "$" - return nil when no currency is specified
+    # This allows proper detection of bare-number amounts
     currency =
       parts
       |> Enum.reverse()
-      |> Enum.find_value("$", fn
+      |> Enum.find_value(fn
         {:currency, curr} -> curr
         _ -> nil
       end)
+
     integer_part = Keyword.get(parts, :integer_part, 0)
 
     # Handle decimal part: convert to fractional value based on number of digits
     # We use the string representation to preserve leading zeros (e.g., "01", "50", "5")
-    decimal_value = case Keyword.get(parts, :decimal_string) do
-      nil -> 0.0
-      decimal_string ->
-        # The number of digits determines the divisor
-        num_digits = String.length(decimal_string)
-        # Parse the string as an integer
-        decimal_int = String.to_integer(decimal_string)
-        divisor = :math.pow(10, num_digits)
-        decimal_int / divisor
-    end
+    decimal_value =
+      case Keyword.get(parts, :decimal_string) do
+        nil ->
+          0.0
+
+        decimal_string ->
+          # The number of digits determines the divisor
+          num_digits = String.length(decimal_string)
+          # Parse the string as an integer
+          decimal_int = String.to_integer(decimal_string)
+          divisor = :math.pow(10, num_digits)
+          decimal_int / divisor
+      end
 
     value = sign * (integer_part + decimal_value)
+    currency_position = Keyword.get(parts, :currency_position)
 
-    %{value: value, currency: currency}
+    %{value: value, currency: currency, currency_position: currency_position}
   end
 
   @spec join_account_parts([String.t() | integer()]) :: String.t()
@@ -647,45 +666,81 @@ defmodule ExLedger.LedgerParser do
     lines = String.split(input, "\n")
     first_line = Enum.at(lines, 0, "")
     trimmed_first = String.trim_leading(first_line)
-    min_postings = if starts_with_directive?(trimmed_first), do: 1, else: 2
+    directive? = starts_with_directive?(trimmed_first)
+    min_postings = if directive?, do: 1, else: 2
+    postings_count = count_postings(lines)
 
-    cond do
-      starts_with_automated?(trimmed_first) and String.trim(trimmed_first) == "=" ->
-        {:error, :missing_predicate}
+    [
+      check_missing_predicate(trimmed_first),
+      check_missing_period(trimmed_first),
+      check_directive_postings(directive?, postings_count, min_postings),
+      check_missing_date(directive?, first_line),
+      check_missing_payee(directive?, first_line),
+      check_invalid_indentation(lines),
+      check_min_postings(postings_count, min_postings),
+      check_insufficient_spacing(lines)
+    ]
+    |> Enum.find(& &1)
+    |> case do
+      nil -> :ok
+      error -> error
+    end
+  end
 
-      starts_with_periodic?(trimmed_first) and String.trim(trimmed_first) == "~" ->
-        {:error, :missing_period}
+  defp check_missing_predicate(trimmed_first) do
+    if starts_with_automated?(trimmed_first) and String.trim(trimmed_first) == "=" do
+      {:error, :missing_predicate}
+    end
+  end
 
-      starts_with_directive?(trimmed_first) and count_postings(lines) < min_postings ->
-        {:error, :insufficient_postings}
+  defp check_missing_period(trimmed_first) do
+    if starts_with_periodic?(trimmed_first) and String.trim(trimmed_first) == "~" do
+      {:error, :missing_period}
+    end
+  end
 
-      # Check for date at start (supports both / and - separators)
-      not starts_with_directive?(trimmed_first) and
-          not Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}/, first_line) ->
-        {:error, :missing_date}
+  defp check_directive_postings(true, postings_count, min_postings) do
+    if postings_count < min_postings do
+      {:error, :insufficient_postings}
+    end
+  end
 
-      # Check for payee (something after date, optional aux date, state, and code)
-      not starts_with_directive?(trimmed_first) and
-          not Regex.match?(
-            ~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}(?:=\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})?\s+(?:[*!]\s+)?(?:\([^)]+\)\s+)?(.+)/,
-            first_line
-          ) ->
-        {:error, :missing_payee}
+  defp check_directive_postings(false, _postings_count, _min_postings), do: nil
 
-      # Check indentation BEFORE checking postings count (invalid indentation might look like no postings)
-      has_invalid_indentation?(lines) ->
-        {:error, :invalid_indentation}
+  defp check_missing_date(false, first_line) do
+    if not Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}/, first_line) do
+      {:error, :missing_date}
+    end
+  end
 
-      # Check minimum postings
-      count_postings(lines) < min_postings ->
-        {:error, :insufficient_postings}
+  defp check_missing_date(true, _first_line), do: nil
 
-      # Check spacing before amounts
-      has_insufficient_spacing?(lines) ->
-        {:error, :insufficient_spacing}
+  defp check_missing_payee(false, first_line) do
+    if not Regex.match?(
+         ~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}(?:=\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})?\s+(?:[*!]\s+)?(?:\([^)]+\)\s+)?(.+)/,
+         first_line
+       ) do
+      {:error, :missing_payee}
+    end
+  end
 
-      true ->
-        :ok
+  defp check_missing_payee(true, _first_line), do: nil
+
+  defp check_invalid_indentation(lines) do
+    if has_invalid_indentation?(lines) do
+      {:error, :invalid_indentation}
+    end
+  end
+
+  defp check_min_postings(postings_count, min_postings) do
+    if postings_count < min_postings do
+      {:error, :insufficient_postings}
+    end
+  end
+
+  defp check_insufficient_spacing(lines) do
+    if has_insufficient_spacing?(lines) do
+      {:error, :insufficient_spacing}
     end
   end
 
@@ -815,10 +870,8 @@ defmodule ExLedger.LedgerParser do
   """
   @spec check_string(String.t(), String.t()) :: boolean()
   def check_string(content, base_dir \\ ".") when is_binary(content) and is_binary(base_dir) do
-    with {:ok, _transactions, _accounts} <-
-           parse_ledger_with_includes(content, base_dir, MapSet.new(), nil) do
-      true
-    else
+    case parse_ledger_with_includes(content, base_dir, MapSet.new(), nil) do
+      {:ok, _transactions, _accounts} -> true
       _ -> false
     end
   end
@@ -832,8 +885,11 @@ defmodule ExLedger.LedgerParser do
     |> split_transactions_with_line_numbers()
     |> Enum.reduce_while({:ok, []}, fn {transaction_string, line}, {:ok, acc} ->
       case parse_transaction(transaction_string) do
-        {:ok, transaction} -> {:cont, {:ok, [transaction | acc]}}
-        {:error, reason} -> {:halt, {:error, {reason, line, source_file}}}
+        {:ok, transaction} ->
+          {:cont, {:ok, [add_source_info(transaction, source_file, line) | acc]}}
+
+        {:error, reason} ->
+          {:halt, {:error, {reason, line, source_file}}}
       end
     end)
     |> case do
@@ -841,6 +897,17 @@ defmodule ExLedger.LedgerParser do
       error -> error
     end
   end
+
+  defp add_source_info(transaction, source_file, line) do
+    transaction
+    |> Map.put(:source_line, line)
+    |> maybe_add_source_file(source_file)
+  end
+
+  defp maybe_add_source_file(transaction, nil), do: transaction
+
+  defp maybe_add_source_file(transaction, source_file),
+    do: Map.put(transaction, :source_file, source_file)
 
   @doc """
   Extracts account declarations from a ledger file.
@@ -1152,11 +1219,21 @@ defmodule ExLedger.LedgerParser do
                  new_import_chain
                ) do
           new_acc = if expanded == "", do: acc, else: [expanded | acc]
-          expand_lines_and_includes(rest, base_dir, seen_files, source_file, import_chain, new_acc)
+
+          expand_lines_and_includes(
+            rest,
+            base_dir,
+            seen_files,
+            source_file,
+            import_chain,
+            new_acc
+          )
         end
       end
     else
-      expand_lines_and_includes(rest, base_dir, seen_files, source_file, import_chain, [line | acc])
+      expand_lines_and_includes(rest, base_dir, seen_files, source_file, import_chain, [
+        line | acc
+      ])
     end
   end
 
@@ -1260,11 +1337,29 @@ defmodule ExLedger.LedgerParser do
         |> Path.join(filename)
         |> Path.expand()
 
-      if path_within_base?(absolute_path, base_dir) do
+      # Resolve symlinks to enforce boundary check
+      # This prevents symlinks inside base_dir from pointing outside
+      real_path = resolve_symlinks(absolute_path)
+      real_base = resolve_symlinks(base_dir)
+
+      if path_within_base?(real_path, real_base) do
+        # Return original path, not resolved
         {:ok, absolute_path}
       else
         {:error, {:include_outside_base, filename}}
       end
+    end
+  end
+
+  # Resolve symlinks in a path using Erlang's :file module
+  # Falls back to the original path if resolution fails (e.g., file doesn't exist)
+  defp resolve_symlinks(path) do
+    charlist_path = String.to_charlist(path)
+
+    case :file.read_link_all(charlist_path) do
+      {:ok, resolved} -> List.to_string(resolved)
+      # Fall back to original if can't resolve
+      {:error, _} -> path
     end
   end
 
@@ -1347,26 +1442,92 @@ defmodule ExLedger.LedgerParser do
     {chunks, current_lines, start_line, in_account_block} = acc
     trimmed = String.trim(line)
 
+    case process_special_line(
+           trimmed,
+           line,
+           index,
+           chunks,
+           current_lines,
+           start_line,
+           in_account_block
+         ) do
+      {:handled, result} ->
+        result
+
+      :continue ->
+        process_standard_line(trimmed, line, index, chunks, current_lines, start_line)
+    end
+  end
+
+  defp process_special_line(
+         trimmed,
+         line,
+         index,
+         chunks,
+         current_lines,
+         start_line,
+         in_account_block
+       ) do
+    case process_timeclock_line(trimmed, index, chunks, current_lines, start_line) do
+      {:handled, result} ->
+        {:handled, result}
+
+      :continue ->
+        process_account_block_line(
+          trimmed,
+          line,
+          index,
+          chunks,
+          current_lines,
+          start_line,
+          in_account_block
+        )
+    end
+  end
+
+  defp process_timeclock_line(trimmed, index, chunks, current_lines, start_line) do
     cond do
       timeclock_line?(trimmed) and current_lines == [] ->
-        {chunks, [], nil, false}
+        {:handled, {chunks, [], nil, false}}
 
       timeclock_line?(trimmed) ->
         chunk = Enum.reverse(current_lines) |> Enum.join("\n")
-        {[{chunk, start_line || index} | chunks], [], nil, false}
+        {:handled, {[{chunk, start_line || index} | chunks], [], nil, false}}
 
+      true ->
+        :continue
+    end
+  end
+
+  defp process_account_block_line(
+         trimmed,
+         line,
+         index,
+         chunks,
+         current_lines,
+         start_line,
+         in_account_block
+       ) do
+    cond do
       old_account_declaration?(trimmed, line, current_lines) ->
-        {chunks, [], nil, false}
+        {:handled, {chunks, [], nil, false}}
 
       new_account_declaration?(trimmed, current_lines) ->
-        {chunks, [], nil, true}
+        {:handled, {chunks, [], nil, true}}
 
       account_block_continuation?(in_account_block, trimmed, line) ->
-        {chunks, [], nil, true}
+        {:handled, {chunks, [], nil, true}}
 
       in_account_block ->
-        handle_account_block_exit(line, index, chunks, current_lines, start_line)
+        {:handled, handle_account_block_exit(line, index, chunks, current_lines, start_line)}
 
+      true ->
+        :continue
+    end
+  end
+
+  defp process_standard_line(trimmed, line, index, chunks, current_lines, start_line) do
+    cond do
       trimmed == "" ->
         handle_empty_line(chunks, current_lines, start_line, index)
 
@@ -1435,7 +1596,10 @@ defmodule ExLedger.LedgerParser do
     current_lines == [] and
       (String.starts_with?(trimmed, ";") or
          String.starts_with?(trimmed, "include ") or
-         String.starts_with?(trimmed, "alias "))
+         String.starts_with?(trimmed, "alias ") or
+         String.starts_with?(trimmed, "tag ") or
+         String.starts_with?(trimmed, "payee ") or
+         String.starts_with?(trimmed, "commodity "))
   end
 
   defp handle_regular_line(line, index, chunks, current_lines, start_line) do
@@ -1548,41 +1712,52 @@ defmodule ExLedger.LedgerParser do
   def balance_postings(postings) when is_list(postings) do
     nil_count = Enum.count(postings, fn p -> is_nil(p.amount) end)
 
-    if nil_count == 1 do
-      # Check if this is a multi-currency transaction
-      currencies =
-        postings
-        |> Enum.filter(fn p -> !is_nil(p.amount) end)
-        |> Enum.map(fn p -> p.amount.currency end)
-        |> Enum.uniq()
-
-      if length(currencies) > 1 do
-        # Cannot auto-balance multi-currency transactions
-        # Return postings as-is and let validation catch it
-        postings
-      else
-        total =
-          postings
-          |> Enum.filter(fn p -> !is_nil(p.amount) end)
-          |> Enum.map(fn p -> p.amount.value end)
-          |> Enum.sum()
-
-        currency =
-          postings
-          |> Enum.find(fn p -> !is_nil(p.amount) end)
-          |> then(fn p -> p.amount.currency end)
-
-        Enum.map(postings, &fill_missing_amount(&1, total, currency))
-      end
-    else
-      postings
+    case nil_count do
+      1 -> balance_single_missing_amount(postings)
+      _ -> postings
     end
   end
 
-  @spec fill_missing_amount(posting(), float(), String.t()) :: posting()
-  defp fill_missing_amount(posting, total, currency) do
+  defp balance_single_missing_amount(postings) do
+    currencies = posting_currencies(postings)
+
+    if Enum.count(currencies) > 1 do
+      postings
+    else
+      apply_missing_amount(postings)
+    end
+  end
+
+  defp posting_currencies(postings) do
+    postings
+    |> Enum.filter(fn p -> !is_nil(p.amount) end)
+    |> Enum.map(fn p -> p.amount.currency end)
+    |> Enum.uniq()
+  end
+
+  defp apply_missing_amount(postings) do
+    total =
+      postings
+      |> Enum.filter(fn p -> !is_nil(p.amount) end)
+      |> Enum.map(fn p -> p.amount.value end)
+      |> Enum.sum()
+
+    {currency, currency_position} =
+      postings
+      |> Enum.find(fn p -> !is_nil(p.amount) end)
+      |> then(fn p -> {p.amount.currency, Map.get(p.amount, :currency_position)} end)
+
+    Enum.map(postings, &fill_missing_amount(&1, total, currency, currency_position))
+  end
+
+  @spec fill_missing_amount(posting(), float(), String.t() | nil, :leading | :trailing | nil) ::
+          posting()
+  defp fill_missing_amount(posting, total, currency, currency_position) do
     if is_nil(posting.amount) do
-      %{posting | amount: %{value: -total, currency: currency}}
+      %{
+        posting
+        | amount: %{value: -total, currency: currency, currency_position: currency_position}
+      }
     else
       posting
     end
@@ -1591,7 +1766,8 @@ defmodule ExLedger.LedgerParser do
   @doc """
   Validates that a transaction is balanced (all postings sum to zero).
   """
-  @spec validate_transaction(transaction()) :: :ok | {:error, :multiple_nil_amounts | :multi_currency_missing_amount | :unbalanced}
+  @spec validate_transaction(transaction()) ::
+          :ok | {:error, :multiple_nil_amounts | :multi_currency_missing_amount | :unbalanced}
   def validate_transaction(%{postings: postings}) do
     nil_count = Enum.count(postings, fn p -> is_nil(p.amount) end)
 
@@ -1658,7 +1834,7 @@ defmodule ExLedger.LedgerParser do
   @spec get_account_postings([transaction()], String.t()) :: [map()]
   def get_account_postings(transactions, account_name) do
     transactions
-    |> Enum.filter(&regular_transaction?/1)
+    |> regular_transactions()
     |> Enum.flat_map(fn transaction ->
       transaction.postings
       |> Enum.filter(fn posting -> posting.account == account_name end)
@@ -1684,16 +1860,15 @@ defmodule ExLedger.LedgerParser do
   def list_accounts(transactions, account_map \\ %{}) do
     transaction_accounts =
       transactions
-      |> Enum.flat_map(fn transaction -> Enum.map(transaction.postings, & &1.account) end)
+      |> all_postings()
+      |> Enum.map(& &1.account)
 
     declared_accounts =
       account_map
       |> Enum.filter(fn {_name, value} -> is_atom(value) end)
       |> Enum.map(fn {name, _type} -> name end)
 
-    (transaction_accounts ++ declared_accounts)
-    |> Enum.uniq()
-    |> Enum.sort()
+    uniq_sort(transaction_accounts ++ declared_accounts)
   end
 
   @spec list_payees([transaction()]) :: [String.t()]
@@ -1701,31 +1876,229 @@ defmodule ExLedger.LedgerParser do
     transactions
     |> Enum.map(& &1.payee)
     |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
-    |> Enum.sort()
+    |> uniq_sort()
   end
 
   @spec list_commodities([transaction()]) :: [String.t()]
   def list_commodities(transactions) do
     transactions
-    |> Enum.flat_map(fn transaction ->
-      Enum.flat_map(transaction.postings, fn posting ->
-        case posting.amount do
-          nil -> []
-          %{currency: currency} -> [currency]
-        end
-      end)
-    end)
-    |> Enum.uniq()
-    |> Enum.sort()
+    |> all_postings()
+    |> Enum.map(&posting_currency/1)
+    |> Enum.reject(&is_nil/1)
+    |> uniq_sort()
   end
 
   @spec list_tags([transaction()]) :: [String.t()]
   def list_tags(transactions) do
     transactions
-    |> Enum.flat_map(fn transaction ->
-      Enum.flat_map(transaction.postings, & &1.tags)
-    end)
+    |> all_postings()
+    |> Enum.flat_map(& &1.tags)
+    |> uniq_sort()
+  end
+
+  @spec extract_payee_declarations(String.t()) :: MapSet.t(String.t())
+  def extract_payee_declarations(input) when is_binary(input) do
+    input
+    |> String.split("\n")
+    |> Enum.reduce(MapSet.new(), &extract_payee_declaration_line/2)
+  end
+
+  defp extract_payee_declaration_line(line, acc) do
+    case payee_from_line(String.trim(line)) do
+      nil -> acc
+      payee -> MapSet.put(acc, payee)
+    end
+  end
+
+  defp payee_from_line(trimmed) do
+    if String.starts_with?(trimmed, "payee ") do
+      trimmed
+      |> String.trim_leading("payee")
+      |> String.trim()
+      |> blank_to_nil()
+    end
+  end
+
+  @spec extract_commodity_declarations(String.t()) :: MapSet.t(String.t())
+  def extract_commodity_declarations(input) when is_binary(input) do
+    input
+    |> String.split("\n")
+    |> Enum.reduce(MapSet.new(), &extract_commodity_declaration_line/2)
+  end
+
+  defp extract_commodity_declaration_line(line, acc) do
+    case commodity_from_line(String.trim(line)) do
+      nil -> acc
+      commodity -> MapSet.put(acc, commodity)
+    end
+  end
+
+  defp commodity_from_line(trimmed) do
+    if String.starts_with?(trimmed, "commodity ") do
+      trimmed
+      |> String.trim_leading("commodity")
+      |> String.trim()
+      |> String.split(~r/\s+/, parts: 2)
+      |> List.first()
+      |> extract_commodity_symbol()
+      |> blank_to_nil()
+    end
+  end
+
+  @spec extract_tag_declarations(String.t()) :: MapSet.t(String.t())
+  def extract_tag_declarations(input) when is_binary(input) do
+    input
+    |> String.split("\n")
+    |> Enum.reduce(MapSet.new(), &extract_tag_declaration_line/2)
+  end
+
+  defp extract_tag_declaration_line(line, acc) do
+    case tag_from_line(String.trim(line)) do
+      nil -> acc
+      tag -> MapSet.put(acc, tag)
+    end
+  end
+
+  defp tag_from_line(trimmed) do
+    if String.starts_with?(trimmed, "tag ") do
+      trimmed
+      |> String.trim_leading("tag")
+      |> String.trim()
+      |> String.split(~r/\s+/, parts: 2)
+      |> List.first()
+      |> blank_to_nil()
+    end
+  end
+
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
+
+  @spec check_accounts([transaction()], %{String.t() => atom() | String.t()}) ::
+          :ok | {:error, String.t()}
+  def check_accounts(transactions, accounts) do
+    declared_set = declared_account_set(accounts)
+
+    transactions
+    |> list_accounts(%{})
+    |> Enum.find(fn account -> not MapSet.member?(declared_set, account) end)
+    |> case do
+      nil -> :ok
+      account -> {:error, account}
+    end
+  end
+
+  @spec check_payees([transaction()], MapSet.t(String.t())) :: :ok | {:error, String.t()}
+  def check_payees(transactions, declared_payees) do
+    transactions
+    |> list_payees()
+    |> Enum.find(fn payee -> not MapSet.member?(declared_payees, payee) end)
+    |> case do
+      nil -> :ok
+      payee -> {:error, payee}
+    end
+  end
+
+  @spec check_commodities([transaction()], MapSet.t(String.t())) :: :ok | {:error, String.t()}
+  def check_commodities(transactions, declared_commodities) do
+    transactions
+    |> list_commodities()
+    |> Enum.find(fn commodity -> not MapSet.member?(declared_commodities, commodity) end)
+    |> case do
+      nil -> :ok
+      commodity -> {:error, commodity}
+    end
+  end
+
+  @spec check_tags([transaction()], String.t(), MapSet.t(String.t())) ::
+          :ok | {:error, String.t()}
+  def check_tags(transactions, contents, declared_tags) do
+    used_tags = extract_used_tags(contents, transactions)
+    allowed_tags = MapSet.union(declared_tags, builtin_tags())
+
+    used_tags
+    |> Enum.find(fn tag -> not MapSet.member?(allowed_tags, tag) end)
+    |> case do
+      nil -> :ok
+      tag -> {:error, tag}
+    end
+  end
+
+  defp declared_account_set(accounts) do
+    accounts
+    |> Enum.filter(fn {_name, value} -> is_atom(value) end)
+    |> Enum.map(fn {name, _type} -> name end)
+    |> MapSet.new()
+  end
+
+  defp extract_used_tags(contents, transactions) do
+    tags_from_notes = list_tags(transactions)
+
+    tags_from_comments =
+      contents
+      |> String.split("\n")
+      |> Enum.flat_map(&tags_from_line/1)
+
+    MapSet.new(tags_from_notes ++ tags_from_comments)
+  end
+
+  defp tags_from_line(line) do
+    case String.split(line, ";", parts: 2) do
+      [_prefix] ->
+        []
+
+      [_prefix, comment] ->
+        comment
+        |> String.trim()
+        |> tags_from_comment()
+    end
+  end
+
+  defp tags_from_comment(comment) do
+    colon_tags =
+      Regex.scan(~r/\b([A-Za-z0-9_-]+):/, comment, capture: :all_but_first)
+      |> List.flatten()
+
+    wrapped_tags =
+      Regex.scan(~r/:([A-Za-z0-9_-]+):/, comment, capture: :all_but_first)
+      |> List.flatten()
+
+    (colon_tags ++ wrapped_tags)
+    |> Enum.reject(&(&1 == "tags"))
+  end
+
+  defp builtin_tags do
+    MapSet.new([
+      "date",
+      "date2",
+      "type",
+      "t",
+      "assert",
+      "retain",
+      "start",
+      "generated-transaction",
+      "modified-transaction",
+      "generated-posting",
+      "cost-posting",
+      "conversion-posting",
+      "_generated-transaction",
+      "_modified-transaction",
+      "_generated-posting",
+      "_cost-posting",
+      "_conversion-posting"
+    ])
+  end
+
+  defp extract_commodity_symbol(nil), do: ""
+
+  defp extract_commodity_symbol(token) do
+    case Regex.run(~r/^([^0-9\s.,]+)/, token) do
+      [_, symbol] -> symbol
+      _ -> token
+    end
+  end
+
+  defp uniq_sort(items) do
+    items
     |> Enum.uniq()
     |> Enum.sort()
   end
@@ -1805,8 +2178,7 @@ defmodule ExLedger.LedgerParser do
   @spec format_select([String.t()], [map()]) :: String.t()
   def format_select(fields, rows) do
     rows
-    |> Enum.map(&format_select_row(&1, fields))
-    |> Enum.join("\n")
+    |> Enum.map_join("\n", &format_select_row(&1, fields))
     |> Kernel.<>("\n")
   end
 
@@ -1815,7 +2187,7 @@ defmodule ExLedger.LedgerParser do
     with {:ok, regex} <- compile_regex(payee_pattern) do
       transaction =
         transactions
-        |> Enum.filter(&regular_transaction?/1)
+        |> regular_transactions()
         |> Enum.reverse()
         |> Enum.find(fn transaction ->
           transaction.payee != nil and Regex.match?(regex, transaction.payee)
@@ -1834,6 +2206,7 @@ defmodule ExLedger.LedgerParser do
     postings =
       Enum.map(transaction.postings, fn posting ->
         amount = format_posting_amount(posting.amount)
+
         if amount == "" do
           "    #{posting.account}"
         else
@@ -1861,29 +2234,74 @@ defmodule ExLedger.LedgerParser do
     Map.get(transaction, :kind, :regular) == :regular and not is_nil(transaction.date)
   end
 
+  defp regular_transactions(transactions) when is_list(transactions) do
+    Enum.filter(transactions, &regular_transaction?/1)
+  end
+
+  defp all_postings(transactions) when is_list(transactions) do
+    Enum.flat_map(transactions, & &1.postings)
+  end
+
+  defp regular_postings(transactions) when is_list(transactions) do
+    transactions
+    |> regular_transactions()
+    |> all_postings()
+  end
+
   @spec parse_timeclock_entries(String.t()) :: [time_entry()]
   def parse_timeclock_entries(input) when is_binary(input) do
-    input
-    |> String.split("\n")
-    |> Enum.reduce({[], []}, fn line, {entries, open} ->
-      trimmed = String.trim(line)
+    {entries, open} =
+      input
+      |> String.split("\n")
+      |> Enum.reduce({[], []}, fn line, {entries, open} ->
+        line
+        |> String.trim()
+        |> process_timeclock_line(entries, open)
+      end)
 
-      cond do
-        String.starts_with?(trimmed, "i ") ->
-          case parse_timeclock_checkin(trimmed) do
-            {:ok, entry} -> {entries, [entry | open]}
-            _ -> {entries, open}
-          end
+    warn_unclosed_timeclock_entries(open)
 
-        String.starts_with?(trimmed, "o ") or String.starts_with?(trimmed, "O ") ->
-          {new_entries, remaining} = close_timeclock_entries(trimmed, open)
-          {entries ++ new_entries, remaining}
+    entries
+  end
 
-        true ->
-          {entries, open}
-      end
-    end)
-    |> elem(0)
+  defp process_timeclock_line(trimmed, entries, open) do
+    cond do
+      String.starts_with?(trimmed, "i ") ->
+        handle_timeclock_checkin(trimmed, entries, open)
+
+      String.starts_with?(trimmed, "o ") or String.starts_with?(trimmed, "O ") ->
+        handle_timeclock_checkout(trimmed, entries, open)
+
+      true ->
+        {entries, open}
+    end
+  end
+
+  defp handle_timeclock_checkin(trimmed, entries, open) do
+    case parse_timeclock_checkin(trimmed) do
+      {:ok, entry} -> {entries, [entry | open]}
+      _ -> {entries, open}
+    end
+  end
+
+  defp handle_timeclock_checkout(trimmed, entries, open) do
+    {new_entries, remaining} = close_timeclock_entries(trimmed, open)
+    {entries ++ new_entries, remaining}
+  end
+
+  defp warn_unclosed_timeclock_entries(open) do
+    if Enum.empty?(open) do
+      :ok
+    else
+      IO.puts(:stderr, "Warning: #{Enum.count(open)} unclosed timeclock check-in(s)")
+
+      Enum.each(open, fn entry ->
+        IO.puts(
+          :stderr,
+          "  - #{entry.account} checked in at #{NaiveDateTime.to_string(entry.start)}"
+        )
+      end)
+    end
   end
 
   @spec timeclock_report([time_entry()]) :: %{String.t() => float()}
@@ -1891,7 +2309,9 @@ defmodule ExLedger.LedgerParser do
     entries
     |> Enum.group_by(& &1.account)
     |> Enum.map(fn {account, account_entries} ->
-      total_seconds = Enum.reduce(account_entries, 0, fn entry, acc -> acc + entry.duration_seconds end)
+      total_seconds =
+        Enum.reduce(account_entries, 0, fn entry, acc -> acc + entry.duration_seconds end)
+
       hours = total_seconds / 3600
       {account, hours}
     end)
@@ -1912,10 +2332,10 @@ defmodule ExLedger.LedgerParser do
   @spec budget_report([transaction()], Date.t()) :: [map()]
   def budget_report(transactions, date \\ Date.utc_today()) do
     periodic_transactions = Enum.filter(transactions, &(&1.kind == :periodic))
-    regular_transactions = Enum.filter(transactions, &regular_transaction?/1)
+    regular_txns = regular_transactions(transactions)
 
     budget_totals = build_budget_totals(periodic_transactions)
-    actual_totals = build_actual_totals(regular_transactions, date)
+    actual_totals = build_actual_totals(regular_txns, date)
 
     budget_accounts = Map.keys(budget_totals)
     actual_accounts = Map.keys(actual_totals)
@@ -1926,7 +2346,9 @@ defmodule ExLedger.LedgerParser do
     |> Enum.flat_map(fn account ->
       account_budget = Map.get(budget_totals, account, %{})
       account_actual = Map.get(actual_totals, account, %{})
-      currencies = (Map.keys(account_budget) ++ Map.keys(account_actual)) |> Enum.uniq() |> Enum.sort()
+
+      currencies =
+        (Map.keys(account_budget) ++ Map.keys(account_actual)) |> Enum.uniq() |> Enum.sort()
 
       Enum.map(currencies, fn currency ->
         budget_value = Map.get(account_budget, currency, 0.0)
@@ -1945,20 +2367,21 @@ defmodule ExLedger.LedgerParser do
 
   @spec format_budget_report([map()]) :: String.t()
   def format_budget_report(rows) do
-    header = String.pad_leading("Actual", 14) <> String.pad_leading("Budget", 14) <>
-      String.pad_leading("Remaining", 14) <> "  Account"
+    header =
+      String.pad_leading("Actual", 14) <>
+        String.pad_leading("Budget", 14) <>
+        String.pad_leading("Remaining", 14) <> "  Account"
 
     body =
-      rows
-      |> Enum.map(fn row ->
+      Enum.map_join(rows, "\n", fn row ->
         actual = format_amount_for_currency(row.actual, row.currency)
         budget = format_amount_for_currency(row.budget, row.currency)
         remaining = format_amount_for_currency(row.remaining, row.currency)
 
-        String.pad_leading(actual, 14) <> String.pad_leading(budget, 14) <>
+        String.pad_leading(actual, 14) <>
+          String.pad_leading(budget, 14) <>
           String.pad_leading(remaining, 14) <> "  " <> row.account
       end)
-      |> Enum.join("\n")
 
     header <> "\n" <> body <> "\n"
   end
@@ -1995,37 +2418,54 @@ defmodule ExLedger.LedgerParser do
     |> Enum.reduce(%{}, fn transaction, acc ->
       multiplier = period_multiplier(transaction.period)
 
-      if multiplier == nil do
-        acc
-      else
-        Enum.reduce(transaction.postings, acc, fn posting, acc_inner ->
-          case posting.amount do
-            nil -> acc_inner
-            %{value: value, currency: currency} ->
-              Map.update(acc_inner, posting.account, %{currency => value * multiplier}, fn totals ->
-                Map.update(totals, currency, value * multiplier, &(&1 + value * multiplier))
-              end)
-          end
-        end)
+      case multiplier do
+        nil -> acc
+        _ -> add_budget_posting_totals(transaction.postings, acc, multiplier)
       end
+    end)
+  end
+
+  defp add_budget_posting_totals(postings, acc, multiplier) do
+    Enum.reduce(postings, acc, fn posting, acc_inner ->
+      add_budget_posting_total(posting, acc_inner, multiplier)
+    end)
+  end
+
+  defp add_budget_posting_total(%{amount: nil}, acc, _multiplier), do: acc
+
+  defp add_budget_posting_total(
+         %{amount: %{value: value, currency: currency}, account: account},
+         acc,
+         multiplier
+       ) do
+    amount = value * multiplier
+
+    Map.update(acc, account, %{currency => amount}, fn totals ->
+      Map.update(totals, currency, amount, &(&1 + amount))
     end)
   end
 
   defp build_actual_totals(transactions, date) do
     Enum.reduce(transactions, %{}, fn transaction, acc ->
       if same_month?(transaction.date, date) do
-        Enum.reduce(transaction.postings, acc, fn posting, acc_inner ->
-          case posting.amount do
-            nil -> acc_inner
-            %{value: value, currency: currency} ->
-              Map.update(acc_inner, posting.account, %{currency => value}, fn totals ->
-                Map.update(totals, currency, value, &(&1 + value))
-              end)
-          end
-        end)
+        add_posting_totals(transaction.postings, acc)
       else
         acc
       end
+    end)
+  end
+
+  defp add_posting_totals(postings, acc) do
+    Enum.reduce(postings, acc, fn posting, acc_inner ->
+      add_posting_total(posting, acc_inner)
+    end)
+  end
+
+  defp add_posting_total(%{amount: nil}, acc), do: acc
+
+  defp add_posting_total(%{amount: %{value: value, currency: currency}, account: account}, acc) do
+    Map.update(acc, account, %{currency => value}, fn totals ->
+      Map.update(totals, currency, value, &(&1 + value))
     end)
   end
 
@@ -2042,13 +2482,27 @@ defmodule ExLedger.LedgerParser do
 
     cond do
       String.contains?(normalized, "daily") -> 365.0 / 12.0
-      String.contains?(normalized, "weekly") and String.contains?(normalized, "bi") -> 26.0 / 12.0
-      String.contains?(normalized, "weekly") -> 52.0 / 12.0
-      String.contains?(normalized, "monthly") and String.contains?(normalized, "bi") -> 0.5
-      String.contains?(normalized, "monthly") -> 1.0
+      String.contains?(normalized, "weekly") -> weekly_multiplier(normalized)
+      String.contains?(normalized, "monthly") -> monthly_multiplier(normalized)
       String.contains?(normalized, "quarter") -> 1.0 / 3.0
       String.contains?(normalized, "year") -> 1.0 / 12.0
       true -> nil
+    end
+  end
+
+  defp weekly_multiplier(normalized) do
+    if String.contains?(normalized, "bi") do
+      26.0 / 12.0
+    else
+      52.0 / 12.0
+    end
+  end
+
+  defp monthly_multiplier(normalized) do
+    if String.contains?(normalized, "bi") do
+      0.5
+    else
+      1.0
     end
   end
 
@@ -2184,35 +2638,24 @@ defmodule ExLedger.LedgerParser do
   defp select_value(posting, "account"), do: posting.account
 
   defp select_value(posting, "amount") do
-    case posting.amount do
-      nil -> nil
-      %{value: value, currency: currency} -> format_amount_for_currency(value, currency)
-    end
+    posting_formatted_amount(posting)
   end
 
   defp select_value(posting, "commodity") do
-    case posting.amount do
-      nil -> nil
-      %{currency: currency} -> currency
-    end
+    posting_currency(posting)
   end
 
   defp select_value(posting, "quantity") do
-    case posting.amount do
-      nil -> nil
-      %{value: value} -> value
-    end
+    posting_amount_value(posting)
   end
 
   defp select_value(_posting, _field), do: nil
 
   defp format_select_row(row, fields) do
-    fields
-    |> Enum.map(fn field ->
+    Enum.map_join(fields, "\t", fn field ->
       value = Map.get(row, field)
       format_select_value(value)
     end)
-    |> Enum.join("\t")
   end
 
   defp format_select_value(%Date{} = value), do: Calendar.strftime(value, "%Y-%m-%d")
@@ -2235,13 +2678,22 @@ defmodule ExLedger.LedgerParser do
   end
 
   defp select_filter_value(posting, "commodity") do
-    case posting.amount do
-      nil -> nil
-      %{currency: currency} -> currency
-    end
+    posting_currency(posting)
   end
 
   defp select_filter_value(_posting, _field), do: nil
+
+  defp posting_formatted_amount(%{amount: %{value: value, currency: currency}}) do
+    format_amount_for_currency(value, currency)
+  end
+
+  defp posting_formatted_amount(_posting), do: nil
+
+  defp posting_currency(%{amount: %{currency: currency}}), do: currency
+  defp posting_currency(_posting), do: nil
+
+  defp posting_amount_value(%{amount: %{value: value}}), do: value
+  defp posting_amount_value(_posting), do: nil
 
   defp parse_select_query(query) do
     query = String.trim(query)
@@ -2325,15 +2777,83 @@ defmodule ExLedger.LedgerParser do
       postings
       |> Enum.map_join("\n", fn posting ->
         date_str = ExLedger.format_date(posting.date)
-        desc = String.pad_trailing(posting.description, 15)
+        desc = String.pad_trailing(posting.description || "", 15)
         account = String.pad_trailing(posting.account, 16)
-        amount_str = ExLedger.format_amount(posting.amount)
-        balance_str = ExLedger.format_amount(posting.balance)
+        amount_str = format_register_amount(posting.amount)
+        balance_str = format_register_amount(posting.balance)
 
         "#{date_str} #{desc}#{account}#{amount_str} #{balance_str}"
       end)
 
     result <> "\n"
+  end
+
+  defp format_register_amount(nil), do: String.pad_leading("0.00", 9)
+
+  defp format_register_amount(%{value: value, currency: currency}) do
+    value
+    |> format_amount_for_currency(currency)
+    |> String.pad_leading(9)
+  end
+
+  defp format_register_amount(value) when is_integer(value) or is_float(value) do
+    ExLedger.format_amount(value)
+  end
+
+  @doc """
+  Builds a register view of postings with running balances.
+  """
+  @spec register([transaction()], Regex.t() | nil) :: [map()]
+  def register(transactions, account_regex \\ nil) do
+    postings = register_postings(transactions)
+
+    filtered =
+      if account_regex do
+        Enum.filter(postings, fn posting -> Regex.match?(account_regex, posting.account) end)
+      else
+        postings
+      end
+
+    {entries, _balances} =
+      Enum.map_reduce(filtered, %{}, fn posting, balances ->
+        amount = posting.amount || %{value: 0.0, currency: nil}
+        currency = Map.get(amount, :currency)
+        key = {posting.account, currency}
+        new_balance = Map.get(balances, key, 0.0) + amount.value
+        entry = Map.put(posting, :balance, %{value: new_balance, currency: currency})
+
+        {entry, Map.put(balances, key, new_balance)}
+      end)
+
+    entries
+  end
+
+  @doc """
+  Formats transactions into ledger-compatible output.
+  """
+  @spec format_transactions([transaction()]) :: String.t()
+  def format_transactions(transactions) do
+    transactions
+    |> regular_transactions()
+    |> Enum.map_join("\n\n", fn transaction ->
+      String.trim_trailing(format_transaction(transaction, transaction.date))
+    end)
+    |> Kernel.<>("\n")
+  end
+
+  defp register_postings(transactions) do
+    transactions
+    |> regular_transactions()
+    |> Enum.flat_map(fn transaction ->
+      Enum.map(transaction.postings, fn posting ->
+        %{
+          date: transaction.date,
+          description: transaction.payee,
+          account: posting.account,
+          amount: posting.amount
+        }
+      end)
+    end)
   end
 
   @doc """
@@ -2415,8 +2935,7 @@ defmodule ExLedger.LedgerParser do
 
   def balance(transactions) when is_list(transactions) do
     transactions
-    |> Enum.filter(&regular_transaction?/1)
-    |> Enum.flat_map(fn transaction -> transaction.postings end)
+    |> regular_postings()
     |> Enum.group_by(fn posting -> posting.account end)
     |> Enum.map(fn {account, postings} ->
       total = postings |> Enum.map(& &1.amount.value) |> Enum.sum()
@@ -2532,7 +3051,14 @@ defmodule ExLedger.LedgerParser do
     end
   end
 
-  defp render_account(account, summaries, children_map, direct_accounts, visible_depth, show_empty) do
+  defp render_account(
+         account,
+         summaries,
+         children_map,
+         direct_accounts,
+         visible_depth,
+         show_empty
+       ) do
     children =
       Map.get(children_map, account, [])
       |> Enum.sort()
@@ -2558,7 +3084,14 @@ defmodule ExLedger.LedgerParser do
 
     child_lines =
       Enum.flat_map(children, fn child ->
-        render_account(child, summaries, children_map, direct_accounts, next_visible_depth, show_empty)
+        render_account(
+          child,
+          summaries,
+          children_map,
+          direct_accounts,
+          next_visible_depth,
+          show_empty
+        )
       end)
 
     lines ++ child_lines
@@ -2614,6 +3147,8 @@ defmodule ExLedger.LedgerParser do
     formatted = :erlang.float_to_binary(abs_value, decimals: 2)
 
     case currency do
+      nil -> sign <> formatted
+      "" -> sign <> formatted
       "$" -> "$" <> sign <> formatted
       _ -> "#{currency} #{sign}#{formatted}"
     end
@@ -2640,7 +3175,13 @@ defmodule ExLedger.LedgerParser do
   """
   @spec balance_by_period(list(), String.t(), Date.t() | nil, Date.t() | nil, function() | nil) ::
           %{String.t() => any()}
-  def balance_by_period(transactions, group_by \\ "none", start_date \\ nil, end_date \\ nil, account_filter \\ nil)
+  def balance_by_period(
+        transactions,
+        group_by \\ "none",
+        start_date \\ nil,
+        end_date \\ nil,
+        account_filter \\ nil
+      )
 
   def balance_by_period([], _group_by, _start_date, _end_date, _account_filter) do
     %{"periods" => [], "balances" => %{}}
@@ -2654,72 +3195,69 @@ defmodule ExLedger.LedgerParser do
     # Filter and sort transactions once - only regular transactions have dates
     sorted_txns =
       transactions
-      |> Enum.filter(&regular_transaction?/1)
+      |> regular_transactions()
       |> Enum.sort_by(& &1.date, Date)
 
     # If no regular transactions, return empty result
-    if Enum.empty?(sorted_txns) do
-      %{"periods" => [], "balances" => %{}}
-    else
-      # Get all transaction dates to determine range
-      dates = Enum.map(sorted_txns, fn txn -> txn.date end)
+    if Enum.empty?(sorted_txns),
+      do: empty_period_balances(),
+      else: do_balance_by_period(sorted_txns, group_by, start_date, end_date, account_filter)
+  end
 
-      min_date = if start_date, do: start_date, else: Enum.min(dates, Date)
-      max_date = if end_date, do: end_date, else: Enum.max(dates, Date)
+  defp empty_period_balances do
+    %{"periods" => [], "balances" => %{}}
+  end
 
-      # Calculate periods
-      periods = calculate_periods(min_date, max_date, group_by)
+  defp do_balance_by_period(sorted_txns, group_by, start_date, end_date, account_filter) do
+    dates = Enum.map(sorted_txns, fn txn -> txn.date end)
 
-      # Build balances incrementally - process each transaction only once
-      {_, balances_by_period} =
-        Enum.reduce(periods, {sorted_txns, %{}}, fn period, {remaining_txns, acc} ->
-          # Split transactions: those in/before this period vs after
-          {period_txns, rest} =
-            Enum.split_while(remaining_txns, fn txn ->
-              Date.compare(txn.date, period.end_date) != :gt
-            end)
+    min_date = start_date || Enum.min(dates, Date)
+    max_date = end_date || Enum.max(dates, Date)
 
-          # Calculate cumulative balance by merging previous balance with new transactions
-          period_balances =
-            if group_by == "yearly" do
-              balance(period_txns)
-            else
-              case get_previous_balances(acc) do
-                nil ->
-                  # First period - calculate from scratch
-                  balance(period_txns)
+    periods = calculate_periods(min_date, max_date, group_by)
 
-                prev_balances ->
-                  # Subsequent periods - add new transactions to previous balances
-                  new_amounts = balance(period_txns)
-                  merge_balances(prev_balances, new_amounts)
-              end
-            end
+    {_, balances_by_period} =
+      Enum.reduce(periods, {sorted_txns, %{}}, fn period, {remaining_txns, acc} ->
+        {period_txns, rest} =
+          Enum.split_while(remaining_txns, fn txn ->
+            Date.compare(txn.date, period.end_date) != :gt
+          end)
 
-          # Apply account filter if provided
-          filtered_balances =
-            if account_filter do
-              period_balances
-              |> Enum.filter(fn {account, _balance} -> account_filter.(account) end)
-              |> Map.new()
-            else
-              period_balances
-            end
+        period_balances = build_period_balances(group_by, period_txns, acc)
+        filtered_balances = maybe_filter_balances(period_balances, account_filter)
 
-          # Store both the filtered result and the full balances for next iteration
-          updated_acc =
-            acc
-            |> Map.put(period.label, filtered_balances)
-            |> Map.put(:__previous_balances__, period_balances)
+        updated_acc =
+          acc
+          |> Map.put(period.label, filtered_balances)
+          |> Map.put(:__previous_balances__, period_balances)
 
-          {rest, updated_acc}
-        end)
+        {rest, updated_acc}
+      end)
 
-      # Remove the internal tracking key from final result
-      final_balances = Map.delete(balances_by_period, :__previous_balances__)
+    final_balances = Map.delete(balances_by_period, :__previous_balances__)
 
-      %{"periods" => periods, "balances" => final_balances}
+    %{"periods" => periods, "balances" => final_balances}
+  end
+
+  defp build_period_balances("yearly", period_txns, _acc), do: balance(period_txns)
+
+  defp build_period_balances(_group_by, period_txns, acc) do
+    case get_previous_balances(acc) do
+      nil ->
+        balance(period_txns)
+
+      prev_balances ->
+        new_amounts = balance(period_txns)
+        merge_balances(prev_balances, new_amounts)
     end
+  end
+
+  defp maybe_filter_balances(period_balances, nil), do: period_balances
+
+  defp maybe_filter_balances(period_balances, account_filter) do
+    period_balances
+    |> Enum.filter(fn {account, _balance} -> account_filter.(account) end)
+    |> Map.new()
   end
 
   # Helper to get previous balances from accumulator
@@ -2754,6 +3292,7 @@ defmodule ExLedger.LedgerParser do
   defp generate_weekly_periods(start_date, end_date) do
     # Find the start of the week for start_date (Monday = 1)
     week_start = Date.add(start_date, -Date.day_of_week(start_date) + 1)
+
     generate_periods_by_interval(week_start, end_date, 7, fn date ->
       "Week #{Date.to_iso8601(date)}"
     end)
@@ -2787,7 +3326,14 @@ defmodule ExLedger.LedgerParser do
     else
       quarter = div(current.month - 1, 3) + 1
       period_end_month = current.month + 2
-      period_end = Date.new!(current.year, period_end_month, Date.days_in_month(Date.new!(current.year, period_end_month, 1)))
+
+      period_end =
+        Date.new!(
+          current.year,
+          period_end_month,
+          Date.days_in_month(Date.new!(current.year, period_end_month, 1))
+        )
+
       label = "#{current.year} Q#{quarter}"
       period = %{label: label, start_date: current, end_date: period_end}
       next_quarter = Date.add(period_end, 1)

@@ -3,8 +3,17 @@ defmodule ExLedger.CLI do
 
   alias ExLedger.LedgerParser
 
-  @switches [file: :string, help: :boolean, strict: :boolean, empty: :boolean]
-  @aliases [f: :file, h: :help, E: :empty, s: :strict]
+  @switches [
+    file: :string,
+    help: :boolean,
+    strict: :boolean,
+    empty: :boolean,
+    basis: :boolean,
+    flat: :boolean,
+    no_total: :boolean,
+    yearly: :boolean
+  ]
+  @aliases [f: :file, h: :help, E: :empty, s: :strict, B: :basis, Y: :yearly]
   @max_regex_length 256
 
   defp list_command_fns do
@@ -23,6 +32,8 @@ defmodule ExLedger.CLI do
   defp command_handlers do
     %{
       "balance" => &handle_balance/1,
+      "bal" => &handle_balance/1,
+      "b" => &handle_balance/1,
       "register" => &handle_register/1,
       "print" => &handle_print/1,
       "check" => &handle_check/1,
@@ -58,7 +69,11 @@ defmodule ExLedger.CLI do
       command_args: Enum.drop(commands, 1),
       help?: opts[:help] || false,
       strict?: opts[:strict] || false,
-      empty?: opts[:empty] || false
+      empty?: opts[:empty] || false,
+      basis?: opts[:basis] || false,
+      flat?: opts[:flat] || false,
+      no_total?: opts[:no_total] || false,
+      yearly?: opts[:yearly] || false
     }
   end
 
@@ -80,13 +95,51 @@ defmodule ExLedger.CLI do
     end
   end
 
-  defp handle_balance(%{file: file, strict?: strict?, empty?: empty?}) do
+  defp handle_balance(%{file: file, strict?: strict?, empty?: empty?, yearly?: yearly?} = opts) do
+    report_query = first_arg(opts.command_args)
+    report_regex = compile_filter_regex(report_query)
+    flat = opts.flat? && not opts.basis?
+
+    if yearly? do
+      run_yearly_balance(file, report_regex, strict?, empty?, opts.no_total?)
+    else
+      format_opts = [
+        show_empty: empty?,
+        flat: flat,
+        show_total: not opts.no_total?,
+        top_level_only: opts.basis?
+      ]
+
+      with_resolved_transactions(file, fn resolved_transactions, accounts, _contents ->
+        case maybe_validate_strict(resolved_transactions, accounts, strict?) do
+          :ok ->
+            resolved_transactions
+            |> LedgerParser.balance_report(report_regex, format_opts)
+            |> IO.write()
+
+          {:error, {:undeclared_account, account_name}} ->
+            halt_error("account '#{account_name}' is used but not declared (strict mode)", 1)
+        end
+      end)
+    end
+  end
+
+  defp run_yearly_balance(file, report_regex, strict?, empty?, no_total?) do
+    format_opts = [show_empty: empty?, show_total: not no_total?]
+
+    account_filter =
+      if report_regex do
+        fn account -> Regex.match?(report_regex, account) end
+      else
+        nil
+      end
+
     with_resolved_transactions(file, fn resolved_transactions, accounts, _contents ->
       case maybe_validate_strict(resolved_transactions, accounts, strict?) do
         :ok ->
           resolved_transactions
-          |> LedgerParser.balance()
-          |> LedgerParser.format_balance(empty?)
+          |> LedgerParser.balance_by_period("yearly", nil, nil, account_filter)
+          |> LedgerParser.format_balance_by_period(format_opts)
           |> IO.write()
 
         {:error, {:undeclared_account, account_name}} ->
@@ -200,7 +253,7 @@ defmodule ExLedger.CLI do
     end)
   end
 
-  defp handle_forecast(%{file: file, command_args: args}) do
+  defp handle_forecast(%{file: file, command_args: args, empty?: empty?}) do
     months =
       case args do
         [value] -> parse_positive_integer(value, 1)
@@ -210,7 +263,7 @@ defmodule ExLedger.CLI do
     with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
       resolved_transactions
       |> LedgerParser.forecast_balance(months)
-      |> LedgerParser.format_balance()
+      |> LedgerParser.format_balance(empty?)
       |> IO.write()
     end)
   end
@@ -352,11 +405,16 @@ defmodule ExLedger.CLI do
       "Options:",
       "  -f, --file    Path to the ledger file",
       "  -h, --help    Show this message",
+      "  -B, --basis   Report in terms of cost basis",
+      "  -Y, --yearly  Group balance report by year",
       "  -E, --empty   Show accounts whose total is zero",
+      "      --flat    Flatten the balance report",
+      "      --no-total Suppress summary totals",
       "  -s, --strict  Require all accounts to be declared",
       "",
       "Commands:",
-      "  balance            Show account balances",
+      "  balance [QUERY]    Show account balances",
+      "  bal, b             Synonyms for balance",
       "  register [REGEX]   Show postings by account",
       "  print              Print ledger transactions",
       "  check [TARGET]     Validate declarations (accounts, payees, commodities, tags)",
@@ -369,7 +427,22 @@ defmodule ExLedger.CLI do
       "  forecast [MONTHS]  Forecast balances using budget",
       "  timeclock          Show timeclock totals",
       "  xact DATE REGEX    Generate a transaction template",
-      "  select QUERY       Run a simple select query"
+      "  select QUERY       Run a simple select query",
+      "",
+      "balance [report-query]",
+      "    Print a balance report showing totals for postings that match",
+      "    report-query, and aggregate totals for parents of those accounts.",
+      "    Options most commonly used with this command are:",
+      "    --basis (-B)     Report in terms of cost basis, not amount or value.",
+      "                    Only show totals for the top-most accounts.",
+      "    --empty (-E)     Show accounts whose total is zero.",
+      "    --flat           Flatten the report to show subtotals for only",
+      "                    accounts matching report-query.",
+      "    --no-total       Suppress the summary total shown at the bottom",
+      "                    of the report.",
+      "    --yearly (-Y)    Group balances by year.",
+      "",
+      "    The synonyms bal and b are also accepted."
     ]
     |> Enum.join("\n")
     |> IO.puts()

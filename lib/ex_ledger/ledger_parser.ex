@@ -3245,7 +3245,11 @@ defmodule ExLedger.LedgerParser do
 
       Enum.reduce(period_balances, acc, fn {_account, amounts_list}, acc_totals ->
         Enum.reduce(amounts_list, acc_totals, fn %{amount: amount, currency: currency}, acc1 ->
-          Map.update(acc1, currency, List.duplicate(0.0, length(period_labels)), fn totals ->
+          initial =
+            List.duplicate(0.0, length(period_labels))
+            |> List.update_at(idx, &(&1 + amount))
+
+          Map.update(acc1, currency, initial, fn totals ->
             List.update_at(totals, idx, &(&1 + amount))
           end)
         end)

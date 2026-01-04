@@ -3,7 +3,7 @@ defmodule ExLedger.EntryFormatterTest do
 
   alias ExLedger.EntryFormatter
 
-  test "formats a ledger entry with code, comment, and postings" do
+  test "formats a ledger entry with notes and trailing currency" do
     transaction = %{
       kind: :regular,
       date: ~D[2024-01-01],
@@ -15,15 +15,24 @@ defmodule ExLedger.EntryFormatterTest do
       predicate: nil,
       period: nil,
       postings: [
-        posting("Expenses:Food", %{value: 5.0, currency: "$"}),
-        posting("Assets:Cash", %{value: -5.0, currency: "$"})
+        %{
+          account: "Expenses:Food",
+          amount: %{value: 100.0, currency: "CHF", currency_position: :trailing},
+          metadata: %{"Type" => "Dining"},
+          tags: ["Eating"],
+          comments: ["extra note"]
+        },
+        posting("Assets:Cash", %{value: -100.0, currency: "CHF", currency_position: :trailing})
       ]
     }
 
     assert EntryFormatter.format_entry(transaction) ==
              "2024/01/01 (ABC) Coffee Shop  ; note\n" <>
-               "    Expenses:Food  $5.00\n" <>
-               "    Assets:Cash  $-5.00\n"
+               "    ; Type: Dining\n" <>
+               "    ; :Eating:\n" <>
+               "    ; extra note\n" <>
+               "    Expenses:Food  100.00 CHF\n" <>
+               "    Assets:Cash  -100.00 CHF\n"
   end
 
   test "formats a ledger entry with an override date" do

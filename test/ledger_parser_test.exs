@@ -1537,8 +1537,8 @@ defmodule ExLedger.LedgerParserTest do
   describe "format_balance/2" do
     test "shows single-currency totals with currency and actual imbalance" do
       balances = %{
-        "Assets:Checking" => %{value: -10.0, currency: "$"},
-        "Expenses:Coffee" => %{value: 5.0, currency: "$"}
+        "Assets:Checking" => [%{amount: -10.0, currency: "$"}],
+        "Expenses:Coffee" => [%{amount: 5.0, currency: "$"}]
       }
 
       result = LedgerParser.format_balance(balances)
@@ -1677,6 +1677,35 @@ defmodule ExLedger.LedgerParserTest do
       assert Enum.at(transactions, 1).payee == "Panera Bread"
       # No account declarations in this test
       assert accounts == %{}
+    end
+
+    test "expands aliases defined in an included file", %{test_dir: test_dir} do
+      accounts_file = Path.join(test_dir, "accounts.ledger")
+
+      File.write!(accounts_file, """
+      account Assets:Checking
+              alias checking
+      alias bank = checking
+      """)
+
+      main_file = Path.join(test_dir, "main.ledger")
+
+      File.write!(main_file, """
+      include accounts.ledger
+
+      2024/01/01 Grocery Store
+          bank                        $50.00
+          Assets:Checking
+      """)
+
+      {:ok, content} = File.read(main_file)
+
+      assert {:ok, _transactions, accounts} =
+               LedgerParser.parse_ledger_with_includes(content, test_dir)
+
+      assert accounts["Assets:Checking"] == :asset
+      assert accounts["checking"] == "Assets:Checking"
+      assert accounts["bank"] == "Assets:Checking"
     end
 
     test "handles nested includes", %{test_dir: test_dir} do
@@ -2139,8 +2168,8 @@ defmodule ExLedger.LedgerParserTest do
       refute Map.has_key?(balances, "checking")
       refute Map.has_key?(balances, "food")
 
-      assert balances["Expenses:Food"].value == 50.0
-      assert balances["Assets:Checking"].value == -50.0
+      assert balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 50.0
+      assert balances["Assets:Checking"] |> hd() |> Map.get(:amount) == -50.0
     end
 
     test "stats resolves aliases before calculating statistics" do
@@ -2191,6 +2220,29 @@ defmodule ExLedger.LedgerParserTest do
       account_list = LedgerParser.list_accounts(resolved, accounts)
 
       # Should show canonical names, not aliases
+      assert "Assets:Checking" in account_list
+      assert "Expenses:Food" in account_list
+      refute "checking" in account_list
+      refute "food" in account_list
+    end
+
+    test "list_accounts resolves aliases without pre-resolving" do
+      input = """
+      account Assets:Checking
+              alias checking
+      account Expenses:Food
+              alias food
+
+      2024/01/01 Grocery Store
+          food                        $50.00
+          checking
+      """
+
+      {:ok, transactions, accounts} =
+        LedgerParser.parse_ledger_with_includes(input, ".", MapSet.new(), nil)
+
+      account_list = LedgerParser.list_accounts(transactions, accounts)
+
       assert "Assets:Checking" in account_list
       assert "Expenses:Food" in account_list
       refute "checking" in account_list
@@ -2269,15 +2321,29 @@ defmodule ExLedger.LedgerParserTest do
       assert accounts["postkonto"] == "Expenses:Groceries"
       assert accounts["groceries"] == "Expenses:Groceries"
     end
+
+    test "expands alias chains to canonical accounts" do
+      input = """
+      account Assets:Checking
+              alias checking
+      alias bank = checking
+      """
+
+      accounts = LedgerParser.extract_account_declarations(input)
+
+      assert accounts["Assets:Checking"] == :asset
+      assert accounts["checking"] == "Assets:Checking"
+      assert accounts["bank"] == "Assets:Checking"
+    end
   end
 
   describe "format_balance/2 - zero balance filtering" do
     test "hides zero-balance accounts by default" do
       balances = %{
-        "Assets:Cash" => %{value: 100.0, currency: "$"},
-        "Assets:Bank" => %{value: 0.0, currency: "$"},
-        "Expenses:Food" => %{value: 50.0, currency: "$"},
-        "Income:Salary" => %{value: -150.0, currency: "$"}
+        "Assets:Cash" => [%{amount: 100.0, currency: "$"}],
+        "Assets:Bank" => [%{amount: 0.0, currency: "$"}],
+        "Expenses:Food" => [%{amount: 50.0, currency: "$"}],
+        "Income:Salary" => [%{amount: -150.0, currency: "$"}]
       }
 
       result = LedgerParser.format_balance(balances, false)
@@ -2293,10 +2359,10 @@ defmodule ExLedger.LedgerParserTest do
 
     test "shows zero-balance accounts when show_empty is true" do
       balances = %{
-        "Assets:Cash" => %{value: 100.0, currency: "$"},
-        "Assets:Bank" => %{value: 0.0, currency: "$"},
-        "Expenses:Food" => %{value: 50.0, currency: "$"},
-        "Income:Salary" => %{value: -150.0, currency: "$"}
+        "Assets:Cash" => [%{amount: 100.0, currency: "$"}],
+        "Assets:Bank" => [%{amount: 0.0, currency: "$"}],
+        "Expenses:Food" => [%{amount: 50.0, currency: "$"}],
+        "Income:Salary" => [%{amount: -150.0, currency: "$"}]
       }
 
       result = LedgerParser.format_balance(balances, true)
@@ -2310,8 +2376,8 @@ defmodule ExLedger.LedgerParserTest do
 
     test "hides zero-balance accounts by default (using default parameter)" do
       balances = %{
-        "Assets:Cash" => %{value: 100.0, currency: "$"},
-        "Assets:Bank" => %{value: 0.0, currency: "$"}
+        "Assets:Cash" => [%{amount: 100.0, currency: "$"}],
+        "Assets:Bank" => [%{amount: 0.0, currency: "$"}]
       }
 
       result = LedgerParser.format_balance(balances)
@@ -2321,6 +2387,71 @@ defmodule ExLedger.LedgerParserTest do
 
       # Should NOT include zero-balance account
       refute result =~ "Bank"
+    end
+
+    test "suppresses totals when show_total is false" do
+      balances = %{
+        "Assets:Cash" => [%{amount: 100.0, currency: "$"}],
+        "Expenses:Food" => [%{amount: -100.0, currency: "$"}]
+      }
+
+      result = LedgerParser.format_balance(balances, show_total: false)
+
+      refute result =~ "--------------------"
+    end
+
+    test "formats flat balance without parent accounts" do
+      balances = %{
+        "Assets:Checking" => [%{amount: 50.0, currency: "$"}],
+        "Assets:Savings" => [%{amount: 25.0, currency: "$"}]
+      }
+
+      result = LedgerParser.format_balance(balances, flat: true, show_total: false)
+
+      assert result =~ "Assets:Checking"
+      assert result =~ "Assets:Savings"
+      refute result =~ "  Assets\n"
+    end
+  end
+
+  describe "balance_report/3" do
+    test "shows parent accounts for filtered queries" do
+      transactions = [
+        %{
+          kind: :regular,
+          date: ~D[2024-01-01],
+          aux_date: nil,
+          state: :uncleared,
+          code: "",
+          payee: "Paycheck",
+          comment: nil,
+          predicate: nil,
+          period: nil,
+          postings: [
+            %{
+              account: "Assets:Checking",
+              amount: %{value: 100.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            },
+            %{
+              account: "Income:Salary",
+              amount: %{value: -100.0, currency: "$"},
+              metadata: %{},
+              tags: [],
+              comments: []
+            }
+          ]
+        }
+      ]
+
+      result = LedgerParser.balance_report(transactions, ~r/Checking/, show_total: false)
+
+      # When showing parent accounts, displays hierarchically:
+      # "Assets" (parent) and "Checking" (child), not "Assets:Checking"
+      assert result =~ "Checking"
+      assert result =~ "Assets"
     end
   end
 
@@ -2571,6 +2702,20 @@ defmodule ExLedger.LedgerParserTest do
       assert LedgerParser.list_tags(transactions) == ["meal", "salary"]
     end
 
+    test "returns earliest transaction", %{transactions: transactions} do
+      transaction = LedgerParser.first_transaction(transactions)
+
+      assert transaction.date == ~D[2024-01-01]
+      assert transaction.payee == "Coffee Shop"
+    end
+
+    test "returns latest transaction", %{transactions: transactions} do
+      transaction = LedgerParser.last_transaction(transactions)
+
+      assert transaction.date == ~D[2024-01-10]
+      assert transaction.payee == "Employer"
+    end
+
     test "builds stats summary", %{transactions: transactions} do
       stats = LedgerParser.stats(transactions)
 
@@ -2722,8 +2867,8 @@ defmodule ExLedger.LedgerParserTest do
 
       forecast = LedgerParser.forecast_balance(transactions, 2)
 
-      assert forecast["Assets:Checking"].value == 250.0
-      assert forecast["Income:Salary"].value == -250.0
+      assert forecast["Assets:Checking"] |> hd() |> Map.get(:amount) == 250.0
+      assert forecast["Income:Salary"] |> hd() |> Map.get(:amount) == -250.0
     end
   end
 
@@ -2934,18 +3079,18 @@ defmodule ExLedger.LedgerParserTest do
 
       # January: $100 + $50 = $150 food, -$150 cash
       jan_balances = balances["2024-01"]
-      assert jan_balances["Expenses:Food"].value == 150.0
-      assert jan_balances["Assets:Cash"].value == -150.0
+      assert jan_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 150.0
+      assert jan_balances["Assets:Cash"] |> hd() |> Map.get(:amount) == -150.0
 
       # February: cumulative = Jan + Feb = $150 + $25 = $175 food, -$175 cash
       feb_balances = balances["2024-02"]
-      assert feb_balances["Expenses:Food"].value == 175.0
-      assert feb_balances["Assets:Cash"].value == -175.0
+      assert feb_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 175.0
+      assert feb_balances["Assets:Cash"] |> hd() |> Map.get(:amount) == -175.0
 
       # March: cumulative = Jan + Feb + Mar = $175 + $75 = $250 food, -$250 cash
       mar_balances = balances["2024-03"]
-      assert mar_balances["Expenses:Food"].value == 250.0
-      assert mar_balances["Assets:Cash"].value == -250.0
+      assert mar_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 250.0
+      assert mar_balances["Assets:Cash"] |> hd() |> Map.get(:amount) == -250.0
     end
 
     test "calculates quarterly balances correctly", %{transactions: transactions} do
@@ -2960,8 +3105,8 @@ defmodule ExLedger.LedgerParserTest do
 
       # Q1: all transactions = $100 + $50 + $25 + $75 = $250 food, -$250 cash
       q1_balances = balances["2024 Q1"]
-      assert q1_balances["Expenses:Food"].value == 250.0
-      assert q1_balances["Assets:Cash"].value == -250.0
+      assert q1_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 250.0
+      assert q1_balances["Assets:Cash"] |> hd() |> Map.get(:amount) == -250.0
     end
 
     test "calculates yearly balances correctly", %{transactions: transactions} do
@@ -2976,8 +3121,8 @@ defmodule ExLedger.LedgerParserTest do
 
       # 2024: all transactions = $250 food, -$250 cash
       year_balances = balances["2024"]
-      assert year_balances["Expenses:Food"].value == 250.0
-      assert year_balances["Assets:Cash"].value == -250.0
+      assert year_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 250.0
+      assert year_balances["Assets:Cash"] |> hd() |> Map.get(:amount) == -250.0
     end
 
     test "groups yearly balances without carrying prior years" do
@@ -3008,12 +3153,12 @@ defmodule ExLedger.LedgerParserTest do
       assert Enum.map(periods, & &1.label) == ["2024", "2025"]
 
       year_2024 = balances["2024"]
-      assert year_2024["Expenses:Food"].value == 40.0
-      assert year_2024["Assets:Cash"].value == -40.0
+      assert year_2024["Expenses:Food"] |> hd() |> Map.get(:amount) == 40.0
+      assert year_2024["Assets:Cash"] |> hd() |> Map.get(:amount) == -40.0
 
       year_2025 = balances["2025"]
-      assert year_2025["Expenses:Food"].value == 60.0
-      assert year_2025["Assets:Cash"].value == -60.0
+      assert year_2025["Expenses:Food"] |> hd() |> Map.get(:amount) == 60.0
+      assert year_2025["Assets:Cash"] |> hd() |> Map.get(:amount) == -60.0
     end
 
     test "applies account filter correctly", %{transactions: transactions} do
@@ -3027,7 +3172,7 @@ defmodule ExLedger.LedgerParserTest do
       jan_balances = balances["2024-01"]
       assert Map.has_key?(jan_balances, "Expenses:Food")
       refute Map.has_key?(jan_balances, "Assets:Cash")
-      assert jan_balances["Expenses:Food"].value == 150.0
+      assert jan_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 150.0
     end
 
     test "respects start_date parameter" do
@@ -3115,13 +3260,20 @@ defmodule ExLedger.LedgerParserTest do
       balances = result["balances"]
       jan_balances = balances["2024-01"]
 
-      # Note: balance/1 sums all values for an account regardless of currency
-      # and uses the first currency found. This is existing behavior.
-      # $100 + EUR 50 = 150 (treated as same currency)
-      assert jan_balances["Expenses:Food"].value == 150.0
-      assert jan_balances["Expenses:Food"].currency == "$"
-      assert jan_balances["Assets:Cash"].value == -150.0
-      assert jan_balances["Assets:Cash"].currency == "$"
+      # With multi-currency fix: Each currency is tracked separately
+      food_expenses = jan_balances["Expenses:Food"]
+      usd_food = Enum.find(food_expenses, fn a -> a.currency == "$" end)
+      eur_food = Enum.find(food_expenses, fn a -> a.currency == "EUR" end)
+
+      assert usd_food.amount == 100.0
+      assert eur_food.amount == 50.0
+
+      cash_balances = jan_balances["Assets:Cash"]
+      usd_cash = Enum.find(cash_balances, fn a -> a.currency == "$" end)
+      eur_cash = Enum.find(cash_balances, fn a -> a.currency == "EUR" end)
+
+      assert usd_cash.amount == -100.0
+      assert eur_cash.amount == -50.0
     end
 
     test "filters out non-regular transactions" do
@@ -3160,7 +3312,7 @@ defmodule ExLedger.LedgerParserTest do
       jan_balances = balances["2024-01"]
 
       # Should only include regular transaction
-      assert jan_balances["Expenses:Food"].value == 100.0
+      assert jan_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 100.0
       refute Map.has_key?(jan_balances, "Expenses:Rent")
       refute Map.has_key?(jan_balances, "Expenses:Fee")
     end
@@ -3220,8 +3372,8 @@ defmodule ExLedger.LedgerParserTest do
 
       # December should have cumulative balance of all 365 transactions
       dec_balances = balances["2024-12"]
-      assert dec_balances["Expenses:Daily"].value == 3650.0
-      assert dec_balances["Assets:Cash"].value == -3650.0
+      assert dec_balances["Expenses:Daily"] |> hd() |> Map.get(:amount) == 3650.0
+      assert dec_balances["Assets:Cash"] |> hd() |> Map.get(:amount) == -3650.0
     end
   end
 

@@ -947,6 +947,7 @@ defmodule ExLedger.LedgerParser do
     |> String.split("\n")
     |> parse_account_blocks([])
     |> build_account_map()
+    |> expand_account_aliases()
   end
 
   @spec parse_account_blocks([String.t()], [account_declaration()]) :: [account_declaration()]
@@ -1094,6 +1095,33 @@ defmodule ExLedger.LedgerParser do
     Enum.reduce(account.aliases, acc, fn alias_name, acc_inner ->
       Map.put(acc_inner, alias_name, account.name)
     end)
+  end
+
+  defp expand_account_aliases(accounts) do
+    Enum.reduce(accounts, accounts, fn {name, value}, acc ->
+      case value do
+        target when is_binary(target) ->
+          resolved_target = resolve_alias_target(target, accounts, MapSet.new([name]))
+          Map.put(acc, name, resolved_target)
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  defp resolve_alias_target(target, accounts, seen) do
+    if MapSet.member?(seen, target) do
+      target
+    else
+      case Map.get(accounts, target) do
+        next when is_binary(next) ->
+          resolve_alias_target(next, accounts, MapSet.put(seen, target))
+
+        _ ->
+          target
+      end
+    end
   end
 
   @doc """
@@ -1880,7 +1908,7 @@ defmodule ExLedger.LedgerParser do
     transaction_accounts =
       transactions
       |> all_postings()
-      |> Enum.map(& &1.account)
+      |> Enum.map(fn posting -> resolve_account_name(posting.account, account_map) end)
 
     declared_accounts =
       account_map
@@ -1913,6 +1941,22 @@ defmodule ExLedger.LedgerParser do
     |> all_postings()
     |> Enum.flat_map(& &1.tags)
     |> uniq_sort()
+  end
+
+  @spec first_transaction([transaction()]) :: transaction() | nil
+  def first_transaction(transactions) do
+    transactions
+    |> regular_transactions()
+    |> Enum.sort_by(& &1.date, Date)
+    |> List.first()
+  end
+
+  @spec last_transaction([transaction()]) :: transaction() | nil
+  def last_transaction(transactions) do
+    transactions
+    |> regular_transactions()
+    |> Enum.sort_by(& &1.date, Date)
+    |> List.last()
   end
 
   @spec extract_payee_declarations(String.t()) :: MapSet.t(String.t())
@@ -2214,7 +2258,7 @@ defmodule ExLedger.LedgerParser do
 
       case transaction do
         nil -> {:error, :xact_not_found}
-        _ -> {:ok, EntryFormatter.format_entry(transaction, date)}
+        _ -> {:ok, EntryFormatter.format_entry(transaction, date, false)}
       end
     end
   end
@@ -2389,17 +2433,30 @@ defmodule ExLedger.LedgerParser do
 
     current_entries =
       current_balances
-      |> Enum.map(fn {account, %{value: value, currency: currency}} ->
-        {{account, currency}, value}
+      |> Enum.flat_map(fn {account, amounts_list} ->
+        Enum.map(amounts_list, fn %{amount: value, currency: currency} ->
+          {{account, currency}, value}
+        end)
       end)
       |> Map.new()
 
     current_entries
     |> Map.merge(budget_adjustments, fn _key, value, adjustment -> value + adjustment end)
-    |> Enum.map(fn {{account, currency}, value} ->
-      {account, %{value: value, currency: currency}}
+    |> Enum.reduce(%{}, fn {{account, currency}, value}, acc ->
+      Map.update(acc, account, [%{amount: value, currency: currency}], fn amounts_list ->
+        update_or_add_currency_amount(amounts_list, currency, value)
+      end)
     end)
-    |> Map.new()
+  end
+
+  defp update_or_add_currency_amount(amounts_list, currency, value) do
+    existing_idx = Enum.find_index(amounts_list, fn a -> a.currency == currency end)
+
+    if existing_idx do
+      List.update_at(amounts_list, existing_idx, fn a -> %{a | amount: value} end)
+    else
+      [%{amount: value, currency: currency} | amounts_list] |> Enum.sort_by(& &1.currency)
+    end
   end
 
   defp build_budget_totals(periodic_transactions) do
@@ -2915,7 +2972,7 @@ defmodule ExLedger.LedgerParser do
       ...>   ]}
       ...> ]
       iex> ExLedger.LedgerParser.balance(transactions)
-      %{"Assets:Checking" => %{value: -24.50, currency: "$"}, "Expenses:Coffee" => %{value: 24.50, currency: "$"}}
+      %{"Assets:Checking" => [%{amount: -24.50, currency: "$"}], "Expenses:Coffee" => [%{amount: 24.50, currency: "$"}]}
   """
   @spec balance([transaction()] | transaction()) :: %{String.t() => amount()}
   def balance(transaction) when is_map(transaction) do
@@ -2927,11 +2984,38 @@ defmodule ExLedger.LedgerParser do
     |> regular_postings()
     |> Enum.group_by(fn posting -> posting.account end)
     |> Enum.map(fn {account, postings} ->
-      total = postings |> Enum.map(& &1.amount.value) |> Enum.sum()
-      currency = hd(postings).amount.currency
-      {account, %{value: total, currency: currency}}
+      # Group postings by currency and sum each currency separately
+      amounts =
+        postings
+        |> Enum.group_by(fn posting -> posting.amount.currency end)
+        |> Enum.map(fn {currency, currency_postings} ->
+          total = currency_postings |> Enum.map(& &1.amount.value) |> Enum.sum()
+          %{amount: total, currency: currency}
+        end)
+        |> Enum.sort_by(& &1.currency)
+
+      {account, amounts}
     end)
     |> Map.new()
+  end
+
+  @doc """
+  Formats a balance report for transactions with optional filtering and output options.
+  """
+  @spec balance_report([transaction()], Regex.t() | nil, keyword()) :: String.t()
+  def balance_report(transactions, report_regex \\ nil, opts \\ []) do
+    balances =
+      transactions
+      |> balance()
+      |> filter_balances(report_regex)
+
+    show_parents =
+      report_regex != nil and not Keyword.get(opts, :flat, false) and
+        not Keyword.get(opts, :top_level_only, false)
+
+    opts = Keyword.put_new(opts, :show_parents, show_parents)
+
+    format_balance(balances, opts)
   end
 
   @doc """
@@ -2941,7 +3025,8 @@ defmodule ExLedger.LedgerParser do
   and the total (which should be 0 for balanced transactions).
 
   The optional `show_empty` parameter controls whether to show accounts with zero balances.
-  Defaults to false (hide zero balances).
+  Defaults to false (hide zero balances). You can also pass keyword options to
+  enable `:show_empty`, `:flat`, `:show_total`, `:top_level_only`, or `:show_parents`.
 
   ## Examples
 
@@ -2949,21 +3034,117 @@ defmodule ExLedger.LedgerParser do
       iex> ExLedger.LedgerParser.format_balance(balances)
       \"             $-23.00  Assets:Checking\\n              $23.00  Expenses:Pacific Bell\\n--------------------\\n                   0\\n\"
   """
-  @spec format_balance(%{String.t() => amount()}, boolean()) :: String.t()
-  def format_balance(balances, show_empty \\ false) do
+  @spec format_balance(%{String.t() => amount()}, boolean() | keyword()) :: String.t()
+  def format_balance(balances, opts \\ false)
+
+  def format_balance(balances, opts) when is_list(opts) do
+    show_empty = Keyword.get(opts, :show_empty, false)
+    flat = Keyword.get(opts, :flat, false)
+    show_total = Keyword.get(opts, :show_total, true)
+    top_level_only = Keyword.get(opts, :top_level_only, false)
+    show_parents = Keyword.get(opts, :show_parents, false)
+
+    format_balance_with_options(
+      balances,
+      show_empty,
+      flat,
+      show_total,
+      top_level_only,
+      show_parents
+    )
+  end
+
+  def format_balance(balances, show_empty) when is_boolean(show_empty) do
+    format_balance_with_options(balances, show_empty, false, true, false, false)
+  end
+
+  @spec format_balance_by_period(%{String.t() => any()}, keyword()) :: String.t()
+  def format_balance_by_period(%{"periods" => periods, "balances" => balances}, opts \\ []) do
+    show_empty = Keyword.get(opts, :show_empty, false)
+    show_total = Keyword.get(opts, :show_total, true)
+
+    case periods do
+      [] ->
+        ""
+
+      _ ->
+        period_labels = Enum.map(periods, & &1.label)
+        account_currency_periods = build_account_currency_periods(period_labels, balances)
+
+        rows =
+          account_currency_periods
+          |> build_period_rows(period_labels, show_empty)
+
+        period_widths = calculate_period_widths(rows, period_labels)
+        account_width = calculate_account_width(rows)
+        header = build_period_header(periods, period_labels, account_width, period_widths)
+
+        body =
+          rows
+          |> Enum.map_join("\n", fn row ->
+            build_period_line(row.account, row.formatted, account_width, period_widths)
+          end)
+
+        totals_section =
+          if show_total do
+            totals = build_period_totals(period_labels, balances)
+            build_period_totals_section(totals, account_width, period_widths)
+          else
+            ""
+          end
+
+        header <> body <> totals_section
+    end
+  end
+
+  defp format_balance_with_options(
+         balances,
+         show_empty,
+         flat,
+         show_total,
+         top_level_only,
+         show_parents
+       ) do
     account_summaries = build_account_summaries(balances)
     children_map = build_children_map(Map.keys(account_summaries))
     direct_accounts = Map.keys(balances) |> MapSet.new()
 
     lines =
-      children_map
-      |> Map.get(nil, [])
-      |> Enum.sort()
-      |> Enum.flat_map(fn account ->
-        render_account(account, account_summaries, children_map, direct_accounts, 0, show_empty)
-      end)
+      cond do
+        top_level_only ->
+          children_map
+          |> Map.get(nil, [])
+          |> Enum.sort()
+          |> Enum.flat_map(fn account ->
+            render_account_lines(account, account_summaries, 0, show_empty)
+          end)
 
-    totals_section = format_totals_section(balances)
+        flat ->
+          balances
+          |> Map.keys()
+          |> Enum.sort()
+          |> Enum.flat_map(fn account ->
+            render_account_lines(account, account_summaries, 0, show_empty)
+          end)
+
+        true ->
+          children_map
+          |> Map.get(nil, [])
+          |> Enum.sort()
+          |> Enum.flat_map(fn account ->
+            render_account(
+              account,
+              account_summaries,
+              children_map,
+              direct_accounts,
+              0,
+              show_empty,
+              show_parents
+            )
+          end)
+      end
+
+    totals_section = if show_total, do: format_totals_section(balances), else: ""
 
     body =
       case lines do
@@ -2974,11 +3155,144 @@ defmodule ExLedger.LedgerParser do
     body <> totals_section
   end
 
+  defp build_account_currency_periods(period_labels, balances) do
+    Enum.reduce(period_labels, %{}, fn label, acc ->
+      period_balances = Map.get(balances, label, %{})
+
+      Enum.reduce(period_balances, acc, fn {account, amounts_list}, acc_accounts ->
+        Enum.reduce(amounts_list, acc_accounts, fn %{amount: amount, currency: currency}, acc1 ->
+          Map.update(acc1, account, %{currency => %{label => amount}}, fn currencies ->
+            Map.update(currencies, currency, %{label => amount}, fn amounts ->
+              Map.update(amounts, label, amount, &(&1 + amount))
+            end)
+          end)
+        end)
+      end)
+    end)
+  end
+
+  defp build_period_rows(account_currency_periods, period_labels, show_empty) do
+    account_currency_periods
+    |> Enum.sort_by(fn {account, _} -> account end)
+    |> Enum.flat_map(fn {account, currency_map} ->
+      currency_map
+      |> Enum.sort_by(fn {currency, _} -> currency end)
+      |> Enum.reduce([], fn {currency, amounts_map}, acc ->
+        amounts = Enum.map(period_labels, &Map.get(amounts_map, &1, 0.0))
+
+        if show_empty or Enum.any?(amounts, fn value -> abs(value) >= 0.01 end) do
+          formatted = Enum.map(amounts, &format_amount_for_currency(&1, currency))
+          [%{account: account, currency: currency, amounts: amounts, formatted: formatted} | acc]
+        else
+          acc
+        end
+      end)
+      |> Enum.reverse()
+    end)
+  end
+
+  defp calculate_period_widths(rows, period_labels) do
+    Enum.reduce(rows, Enum.map(period_labels, &String.length/1), fn row, acc ->
+      Enum.zip(acc, row.formatted)
+      |> Enum.map(fn {width, value} -> max(width, String.length(value)) end)
+    end)
+  end
+
+  defp calculate_account_width(rows) do
+    rows
+    |> Enum.map(&String.length(&1.account))
+    |> Enum.max(fn -> 0 end)
+  end
+
+  defp build_period_header(periods, period_labels, account_width, period_widths) do
+    start_date = periods |> List.first() |> Map.fetch!(:start_date) |> Date.to_iso8601()
+    end_date = periods |> List.last() |> Map.fetch!(:end_date) |> Date.to_iso8601()
+    label_line = build_period_label_line(period_labels, period_widths)
+    account_pad = String.duplicate(" ", account_width)
+    header_line = account_pad <> " || " <> label_line
+    separator_line = String.duplicate("=", account_width) <> "++" <> String.duplicate("=", String.length(label_line))
+
+    "Balance changes in #{start_date}..#{end_date}:\n\n" <>
+      header_line <> "\n" <> separator_line <> "\n"
+  end
+
+  defp build_period_label_line(period_labels, period_widths) do
+    period_labels
+    |> Enum.zip(period_widths)
+    |> Enum.map_join("  ", fn {label, width} ->
+      String.pad_leading(label, width)
+    end)
+  end
+
+  defp build_period_line(account, formatted_values, account_width, period_widths) do
+    account_column = String.pad_trailing(account, account_width)
+
+    values_line =
+      formatted_values
+      |> Enum.zip(period_widths)
+      |> Enum.map_join("  ", fn {value, width} ->
+        String.pad_leading(value, width)
+      end)
+
+    account_column <> " || " <> values_line
+  end
+
+  defp build_period_totals(period_labels, balances) do
+    period_labels
+    |> Enum.with_index()
+    |> Enum.reduce(%{}, fn {label, idx}, acc ->
+      period_balances = Map.get(balances, label, %{})
+
+      Enum.reduce(period_balances, acc, fn {_account, amounts_list}, acc_totals ->
+        Enum.reduce(amounts_list, acc_totals, fn %{amount: amount, currency: currency}, acc1 ->
+          Map.update(acc1, currency, List.duplicate(0.0, length(period_labels)), fn totals ->
+            List.update_at(totals, idx, &(&1 + amount))
+          end)
+        end)
+      end)
+    end)
+  end
+
+  defp build_period_totals_section(totals, account_width, period_widths) do
+    totals_lines =
+      totals
+      |> Enum.sort_by(fn {currency, _} -> currency end)
+      |> Enum.map_join("\n", fn {currency, amounts} ->
+        formatted = Enum.map(amounts, &format_amount_for_currency(&1, currency))
+        build_period_line("", formatted, account_width, period_widths)
+      end)
+
+    separator =
+      String.duplicate("-", account_width) <>
+        "++" <>
+        String.duplicate("-", total_period_width(period_widths))
+
+    "\n" <> separator <> "\n" <> totals_lines <> "\n"
+  end
+
+  defp total_period_width(period_widths) do
+    case period_widths do
+      [] -> 0
+      _ -> Enum.sum(period_widths) + (length(period_widths) - 1) * 2
+    end
+  end
+
+  @doc false
+  def filter_balances(balances, nil), do: balances
+
+  def filter_balances(balances, report_regex) do
+    balances
+    |> Enum.filter(fn {account, _amount} -> Regex.match?(report_regex, account) end)
+    |> Map.new()
+  end
+
   defp format_totals_section(balances) do
     currency_totals =
       balances
-      |> Enum.reduce(%{}, fn {_account, %{value: value, currency: currency}}, acc ->
-        Map.update(acc, currency, value, &(&1 + value))
+      |> Enum.reduce(%{}, fn {_account, amounts_list}, acc ->
+        Enum.reduce(amounts_list, acc, fn %{amount: value, currency: currency}, acc_inner ->
+          Map.update(acc_inner, currency, value, &(&1 + value))
+        end)
       end)
 
     separator = String.duplicate("-", 20) <> "\n"
@@ -3004,13 +3318,18 @@ defmodule ExLedger.LedgerParser do
   end
 
   defp build_account_summaries(balances) do
-    Enum.reduce(balances, %{}, fn {account, %{value: value, currency: currency}}, acc ->
+    Enum.reduce(balances, %{}, fn {account, amounts_list}, acc ->
       segments = String.split(account, ":")
-
-      Enum.reduce(1..length(segments), acc, fn idx, acc_inner ->
-        prefix = Enum.take(segments, idx) |> Enum.join(":")
-        update_account_summary(acc_inner, prefix, currency, value)
+      Enum.reduce(amounts_list, acc, fn %{amount: value, currency: currency}, acc_currencies ->
+        add_amount_to_account_hierarchy(acc_currencies, segments, currency, value)
       end)
+    end)
+  end
+
+  defp add_amount_to_account_hierarchy(acc, segments, currency, value) do
+    Enum.reduce(1..length(segments), acc, fn idx, acc_inner ->
+      prefix = Enum.take(segments, idx) |> Enum.join(":")
+      update_account_summary(acc_inner, prefix, currency, value)
     end)
   end
 
@@ -3046,14 +3365,15 @@ defmodule ExLedger.LedgerParser do
          children_map,
          direct_accounts,
          visible_depth,
-         show_empty
+         show_empty,
+         show_parents
        ) do
     children =
       Map.get(children_map, account, [])
       |> Enum.sort()
 
     direct? = MapSet.member?(direct_accounts, account)
-    should_show = direct? or length(children) > 1
+    should_show = direct? or length(children) > 1 or show_parents
 
     # Check if account has non-zero balance
     %{amounts: amounts} = Map.get(summaries, account, %{amounts: %{}})
@@ -3079,7 +3399,8 @@ defmodule ExLedger.LedgerParser do
           children_map,
           direct_accounts,
           next_visible_depth,
-          show_empty
+          show_empty,
+          show_parents
         )
       end)
 
@@ -3131,16 +3452,27 @@ defmodule ExLedger.LedgerParser do
   end
 
   @doc false
-  def format_amount_for_currency(value, currency) do
+  def format_amount_for_currency(value, currency, currency_position \\ :leading) do
     sign = if value < 0, do: "-", else: ""
     abs_value = abs(value)
     formatted = :erlang.float_to_binary(abs_value, decimals: 2)
+    position = currency_position || :leading
 
-    case currency do
-      nil -> sign <> formatted
-      "" -> sign <> formatted
-      "$" -> "$" <> sign <> formatted
-      _ -> "#{currency} #{sign}#{formatted}"
+    case {currency, position} do
+      {nil, _} ->
+        sign <> formatted
+
+      {"", _} ->
+        sign <> formatted
+
+      {"$", :leading} ->
+        "$" <> sign <> formatted
+
+      {currency, :leading} ->
+        "#{currency} #{sign}#{formatted}"
+
+      {currency, :trailing} ->
+        "#{sign}#{formatted} #{currency}"
     end
   end
 
@@ -3255,10 +3587,17 @@ defmodule ExLedger.LedgerParser do
     Map.get(acc, :__previous_balances__)
   end
 
-  # Merge two balance maps by adding values for matching accounts
+  # Merge two balance maps by adding values for matching accounts and currencies
   defp merge_balances(bal1, bal2) do
-    Map.merge(bal1, bal2, fn _account, %{value: v1, currency: c}, %{value: v2, currency: _} ->
-      %{value: v1 + v2, currency: c}
+    Map.merge(bal1, bal2, fn _account, amounts_list1, amounts_list2 ->
+      # Combine both lists and group by currency
+      (amounts_list1 ++ amounts_list2)
+      |> Enum.group_by(& &1.currency)
+      |> Enum.map(fn {currency, amounts} ->
+        total = amounts |> Enum.map(& &1.amount) |> Enum.sum()
+        %{amount: total, currency: currency}
+      end)
+      |> Enum.sort_by(& &1.currency)
     end)
   end
 

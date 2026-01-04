@@ -1,0 +1,11 @@
+; Test file to demonstrate currency conversion issues
+
+; Initial USD transaction
+2024/01/01 Paypal payment
+  Assets:Paypal:USD    USD 100.00
+  Income:Sales:USD     USD -100.00
+
+; Currency conversion at year end - converts USD to CHF
+2024/12/31 Paypal USD Conversion @ 0.90
+  Assets:Paypal:USD    USD -100.00
+  Assets:Paypal:USD    CHF 90.00

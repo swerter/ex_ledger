@@ -1,0 +1,9 @@
+commodity $
+account Assets:Cash  ; type:asset
+account Equity:Opening  ; type:equity
+payee Store
+tag lunch
+
+2024/01/01 Store  ; lunch:
+    Assets:Cash  $10
+    Equity:Opening

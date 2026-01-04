@@ -1,0 +1,34 @@
+; Account declarations
+account Assets:Checking  ; type:asset
+account Assets:Savings  ; type:asset
+account Expenses:Food  ; type:expense
+account Expenses:Transportation  ; type:expense
+account Income:Salary  ; type:revenue
+account Liabilities:Credit Card  ; type:liability
+account Equity:Opening Balances  ; type:equity
+
+; Sample transactions using all declared accounts
+2024/01/01 Opening Balance
+    Assets:Checking            $1000.00
+    Equity:Opening Balances
+
+2024/01/02 Savings Deposit
+    Assets:Savings             $200.00
+    Equity:Opening Balances
+
+2024/01/03 Grocery Store
+    ; :meal:
+    Expenses:Food               $50.00
+    Assets:Checking
+
+2024/01/04 City Transit
+    Expenses:Transportation     $10.00
+    Assets:Checking
+
+2024/01/05 Paycheck
+    Assets:Checking            $500.00
+    Income:Salary
+
+2024/01/06 Credit Card Payment
+    Liabilities:Credit Card   $-100.00
+    Assets:Checking

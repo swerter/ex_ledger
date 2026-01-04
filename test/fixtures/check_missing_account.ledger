@@ -1,0 +1,6 @@
+commodity $
+account Assets:Cash  ; type:asset
+
+2024/01/01 Store
+    Assets:Cash  $10
+    Equity:Opening

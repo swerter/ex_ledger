@@ -1,0 +1,41 @@
+;--explicit
+;--pedantic
+
+; include all accounts
+include accounts
+
+; Aliases
+alias kasse = 1 Aktiven:10 Umlaufvermögen:1000 Kasse
+alias postkonto = 1 Aktiven:10 Umlaufvermögen:1020 Postcheck CHF
+alias wise = 1 Aktiven:10 Umlaufvermögen:1022 Wise
+alias kreditkarte = 1 Aktiven:10 Umlaufvermögen:1030 Kreditkarte
+alias rechnungsabgrenzung = 1 Aktiven:10 Umlaufvermögen:130 Aktive Rechnungsabgrenzung
+alias braintree = 1 Aktiven:10 Umlaufvermögen:110 Forderungen:1100 Debitoren:Braintree
+alias paypal = 1 Aktiven:10 Umlaufvermögen:110 Forderungen:1100 Debitoren:Paypal:USD
+alias michael = 2 Passiven:24 Fremdkapital:2420 Privatkonto:Michael
+alias dejan = 2 Passiven:24 Fremdkapital:2421 Privatkonto:Dejan
+alias bankspesen = 6 Sonstiger Aufwand:68 Finanzaufwand:6890 Bankspesen
+alias kreditkartenspesen = 6 Sonstiger Aufwand:68 Finanzaufwand:6895 Kreditkartenspesen
+
+; Bookings
+include opening_balances-23.ledger
+include all-23.ledger
+include bills-24.ledger
+include bills_no_vat-24.ledger
+include stripe_payouts-24.ledger
+include stripe_payouts-24-wise.ledger
+include other-24.ledger
+include other_no_vat-24.ledger
+; ; include checks-24.ledger
+; include paypal_manual-24.ledger
+include bank_transfers-24.ledger
+; include other_expenses-24.ledger
+include salary-Michael-24.ledger
+include salary-Dejan-24.ledger
+include salary-payouts-24.ledger
+include gewinnverteilung-24.ledger
+include paypal-24.ledger
+; include outsourcing-24.ledger
+include currency_convert-24.ledger
+include sozialversicherung-24.ledger
+include entsendung-Michael-24.ledger

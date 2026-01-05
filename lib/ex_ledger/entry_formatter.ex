@@ -17,8 +17,8 @@ defmodule ExLedger.EntryFormatter do
 
     postings =
       Enum.flat_map(transaction.postings, fn posting ->
-        account = Map.get(posting, :account) || Map.get(posting, "account") || ""
-        amount = format_posting_amount(Map.get(posting, :amount) || Map.get(posting, "amount"))
+        account = fetch_value(posting, :account, "")
+        amount = format_posting_amount(fetch_value(posting, :amount))
         notes = if include_notes, do: format_posting_notes(posting), else: []
 
         posting_line =
@@ -36,9 +36,9 @@ defmodule ExLedger.EntryFormatter do
 
   defp build_transaction_header(transaction, date) do
     date_string = Calendar.strftime(date, "%Y/%m/%d")
-    code = Map.get(transaction, :code) || Map.get(transaction, "code") || ""
-    comment = normalize_comment(Map.get(transaction, :comment) || Map.get(transaction, "comment"))
-    payee = Map.get(transaction, :payee) || Map.get(transaction, "payee") || ""
+    code = fetch_value(transaction, :code, "")
+    comment = normalize_comment(fetch_value(transaction, :comment))
+    payee = fetch_value(transaction, :payee, "")
     code_segment = if code == "", do: "", else: " (#{code})"
     comment_segment = if comment, do: "  ; #{comment}", else: ""
     "#{date_string}#{code_segment} #{payee}#{comment_segment}"
@@ -76,9 +76,9 @@ defmodule ExLedger.EntryFormatter do
   defp normalize_comment(comment), do: comment
 
   defp format_posting_notes(posting) do
-    metadata = Map.get(posting, :metadata) || Map.get(posting, "metadata") || %{}
-    tags = Map.get(posting, :tags) || Map.get(posting, "tags") || []
-    comments = Map.get(posting, :comments) || Map.get(posting, "comments") || []
+    metadata = fetch_value(posting, :metadata, %{})
+    tags = fetch_value(posting, :tags, [])
+    comments = fetch_value(posting, :comments, [])
 
     metadata_lines =
       metadata
@@ -89,5 +89,9 @@ defmodule ExLedger.EntryFormatter do
     comment_lines = Enum.map(comments, &"    ; #{&1}")
 
     metadata_lines ++ tag_lines ++ comment_lines
+  end
+
+  defp fetch_value(map, key, default \\ nil) do
+    Map.get(map, key, Map.get(map, to_string(key), default))
   end
 end

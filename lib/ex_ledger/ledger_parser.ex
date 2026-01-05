@@ -505,10 +505,6 @@ defmodule ExLedger.LedgerParser do
     <<first_char::utf8>> <> to_string(rest)
   end
 
-  defp join_metadata_key([first_char]) when is_integer(first_char) do
-    <<first_char::utf8>>
-  end
-
   @spec build_account_declaration([{atom(), any()}, ...]) :: %{name: any(), type: any()}
   defp build_account_declaration(parts) do
     name = Keyword.get(parts, :account_name)

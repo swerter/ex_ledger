@@ -8,6 +8,7 @@ defmodule ExLedger.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      package: package(),
       releases: releases(),
       test_coverage: [tool: ExCoveralls],
       preferred_cli_env: [
@@ -17,6 +18,15 @@ defmodule ExLedger.MixProject do
         "coveralls.html": :test,
         "coveralls.cobertura": :test
       ]
+    ]
+  end
+
+  defp package do
+    [
+      files: ["lib", "mix.exs", "README*", "LICENSE*"],
+      maintainers: ["Michael J. Bruderer"],
+      licenses: ["MIT"],
+      links: %{"GitHub" => "https://github.com/swerter/ex_ledger"}
     ]
   end
 

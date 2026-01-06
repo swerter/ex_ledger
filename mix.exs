@@ -9,6 +9,7 @@ defmodule ExLedger.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       package: package(),
+      description: description(),
       releases: releases(),
       test_coverage: [tool: ExCoveralls],
       preferred_cli_env: [
@@ -28,6 +29,12 @@ defmodule ExLedger.MixProject do
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/swerter/ex_ledger"}
     ]
+  end
+
+  defp description do
+    """
+    An (partial) elixir implementation of ledger-cli plaintext bookkeeping system.
+    """
   end
 
   defp releases do

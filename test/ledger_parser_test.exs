@@ -1305,6 +1305,49 @@ defmodule ExLedger.LedgerParserTest do
 
       assert {:error, :multi_currency_missing_amount} = LedgerParser.parse_transaction(input)
     end
+
+    test "allows transaction with zero-value currency and missing amount" do
+      # Zero-value amounts should be ignored when checking for multi-currency
+      # This allows opening balances with 0.00 in secondary currencies
+      input = """
+      2024/01/01 Opening Balances with zero EUR
+        Assets:Checking            CHF 1000.00
+        Assets:Bank                EUR 0.00
+        Equity:Opening Balances
+      """
+
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      assert :ok = LedgerParser.validate_transaction(transaction)
+
+      # Verify the transaction can be balanced
+      balanced_postings = LedgerParser.balance_postings(transaction.postings)
+      last_posting = List.last(balanced_postings)
+
+      assert last_posting.amount != nil, "Last posting should be auto-balanced"
+      assert last_posting.amount.currency == "CHF", "Should balance in CHF (non-zero currency)"
+      assert abs(last_posting.amount.value - -1000.0) < 0.01, "Should balance to -1000 CHF"
+    end
+
+    test "allows transaction with multiple zero-value currencies and missing amount" do
+      # Multiple zero-value amounts in different currencies should all be ignored
+      input = """
+      2024/01/01 Opening Balances
+        Assets:Checking            CHF 500.00
+        Assets:Paypal:USD          USD 0.00
+        Assets:Bank:EUR            EUR 0.00
+        Equity:Opening Balances
+      """
+
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      assert :ok = LedgerParser.validate_transaction(transaction)
+
+      balanced_postings = LedgerParser.balance_postings(transaction.postings)
+      last_posting = List.last(balanced_postings)
+
+      assert last_posting.amount != nil
+      assert last_posting.amount.currency == "CHF"
+      assert abs(last_posting.amount.value - -500.0) < 0.01
+    end
   end
 
   describe "get_account_postings/2" do

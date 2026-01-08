@@ -1774,6 +1774,7 @@ defmodule ExLedger.LedgerParser do
   defp posting_currencies(postings) do
     postings
     |> Enum.filter(fn p -> !is_nil(p.amount) end)
+    |> Enum.filter(fn p -> p.amount.value != 0 && p.amount.value != 0.0 end)
     |> Enum.map(fn p -> p.amount.currency end)
     |> Enum.uniq()
   end
@@ -1834,6 +1835,7 @@ defmodule ExLedger.LedgerParser do
     currencies =
       postings
       |> Enum.filter(fn p -> !is_nil(p.amount) end)
+      |> Enum.filter(fn p -> p.amount.value != 0 && p.amount.value != 0.0 end)
       |> Enum.map(fn p -> p.amount.currency end)
       |> Enum.uniq()
 

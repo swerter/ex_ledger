@@ -3306,9 +3306,12 @@ defmodule ExLedger.LedgerParser do
       amount_str = format_amount_for_currency(normalized_total, currency)
       separator <> String.pad_leading(amount_str, 20) <> "\n"
     else
-      # Multiple currencies - show each currency total
+      # Multiple currencies - show each currency total (excluding zero balances)
       total_lines =
         currency_totals
+        |> Enum.filter(fn {_currency, value} ->
+          Float.round(value, 2) != 0.0
+        end)
         |> Enum.sort_by(fn {currency, _value} -> currency end)
         |> Enum.map_join("\n", fn {currency, value} ->
           amount_str = format_amount_for_currency(value, currency)

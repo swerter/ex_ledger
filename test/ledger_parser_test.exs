@@ -931,7 +931,7 @@ defmodule ExLedger.LedgerParserTest do
           Liabilities:Credit Card
       """
 
-      assert {:ok, transactions} = LedgerParser.parse_ledger(input)
+      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
 
       assert length(transactions) == 4
 
@@ -970,7 +970,7 @@ defmodule ExLedger.LedgerParserTest do
           Liabilities:Credit Card
       """
 
-      assert {:ok, transactions} = LedgerParser.parse_ledger(input)
+      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
 
       assert length(transactions) == 4
 
@@ -991,8 +991,8 @@ defmodule ExLedger.LedgerParserTest do
     end
 
     test "handles empty input" do
-      assert {:ok, []} = LedgerParser.parse_ledger("")
-      assert {:ok, []} = LedgerParser.parse_ledger("\n\n")
+      assert {:ok, [], _accounts} = LedgerParser.parse_ledger("")
+      assert {:ok, [], _accounts} = LedgerParser.parse_ledger("\n\n")
     end
 
     test "parses consecutive transactions without blank lines between them" do
@@ -1008,7 +1008,7 @@ defmodule ExLedger.LedgerParserTest do
           Account:F
       """
 
-      assert {:ok, transactions} = LedgerParser.parse_ledger(input)
+      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
 
       assert length(transactions) == 3
 
@@ -1034,7 +1034,7 @@ defmodule ExLedger.LedgerParserTest do
           Account:C  CHF -300.00
       """
 
-      assert {:ok, [transaction]} = LedgerParser.parse_ledger(input)
+      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
 
       assert transaction.date == ~D[2024-01-21]
       assert transaction.payee == "Multi-posting transaction"
@@ -1057,7 +1057,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, [transaction]} = LedgerParser.parse_ledger(input)
+      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
 
       [posting1, posting2] = transaction.postings
 
@@ -1079,7 +1079,7 @@ defmodule ExLedger.LedgerParserTest do
           Account:C  CHF -116.80 ;; comment 3
       """
 
-      assert {:ok, transactions} = LedgerParser.parse_ledger(input)
+      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
 
       assert length(transactions) == 2
 
@@ -1099,7 +1099,7 @@ defmodule ExLedger.LedgerParserTest do
           Account:B
       """
 
-      assert {:ok, [transaction]} = LedgerParser.parse_ledger(input)
+      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
       assert transaction.date == ~D[2024-06-01]
       assert transaction.payee == "Transaction with dash date"
     end
@@ -1112,7 +1112,7 @@ defmodule ExLedger.LedgerParserTest do
           Account:C  USD -100.0
       """
 
-      assert {:ok, [transaction]} = LedgerParser.parse_ledger(input)
+      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
       assert length(transaction.postings) == 3
 
       # Check amounts are parsed correctly
@@ -1136,7 +1136,10 @@ defmodule ExLedger.LedgerParserTest do
           Income
       """
 
-      assert {:error, {:missing_payee, 5, nil}} = LedgerParser.parse_ledger(input)
+      assert {:error, error} = LedgerParser.parse_ledger(input)
+      assert error.reason == :missing_payee
+      assert error.line == 5
+      assert error.file == nil
     end
   end
 
@@ -1601,7 +1604,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transactions} = LedgerParser.parse_ledger(input)
+      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
       assert length(transactions) == 1
     end
   end
@@ -1712,7 +1715,7 @@ defmodule ExLedger.LedgerParserTest do
       {:ok, content} = File.read(main_file)
 
       assert {:ok, transactions, accounts} =
-               LedgerParser.parse_ledger_with_includes(content, test_dir)
+               LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       # Should have both transactions
       assert length(transactions) == 2
@@ -1744,7 +1747,7 @@ defmodule ExLedger.LedgerParserTest do
       {:ok, content} = File.read(main_file)
 
       assert {:ok, _transactions, accounts} =
-               LedgerParser.parse_ledger_with_includes(content, test_dir)
+               LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       assert accounts["Assets:Checking"] == :asset
       assert accounts["checking"] == "Assets:Checking"
@@ -1786,7 +1789,7 @@ defmodule ExLedger.LedgerParserTest do
       {:ok, content} = File.read(main_file)
 
       assert {:ok, transactions, _accounts} =
-               LedgerParser.parse_ledger_with_includes(content, test_dir)
+               LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       # Should have all three transactions
       assert length(transactions) == 3
@@ -1809,7 +1812,7 @@ defmodule ExLedger.LedgerParserTest do
       {:ok, content} = File.read(main_file)
 
       assert {:error, {:include_not_found, "nonexistent.ledger"}} =
-               LedgerParser.parse_ledger_with_includes(content, test_dir)
+               LedgerParser.parse_ledger(content, base_dir: test_dir)
     end
 
     test "handles relative paths in includes", %{test_dir: test_dir} do
@@ -1838,7 +1841,7 @@ defmodule ExLedger.LedgerParserTest do
       {:ok, content} = File.read(main_file)
 
       assert {:ok, transactions, _accounts} =
-               LedgerParser.parse_ledger_with_includes(content, test_dir)
+               LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       assert length(transactions) == 2
     end
@@ -1869,7 +1872,7 @@ defmodule ExLedger.LedgerParserTest do
       {:ok, content} = File.read(file_a)
 
       assert {:error, {:circular_include, _}} =
-               LedgerParser.parse_ledger_with_includes(content, test_dir)
+               LedgerParser.parse_ledger(content, base_dir: test_dir)
     end
 
     test "rejects symlinks pointing outside base directory", %{test_dir: test_dir} do
@@ -1905,7 +1908,7 @@ defmodule ExLedger.LedgerParserTest do
 
           # Should reject because symlink points outside base_dir
           assert {:error, {:include_outside_base, "symlink.ledger"}} =
-                   LedgerParser.parse_ledger_with_includes(content, test_dir)
+                   LedgerParser.parse_ledger(content, base_dir: test_dir)
 
         {:error, _} ->
           # Skip test if symlinking is not supported
@@ -1931,7 +1934,7 @@ defmodule ExLedger.LedgerParserTest do
       {:ok, content} = File.read(main_file)
 
       assert {:ok, transactions, _accounts} =
-               LedgerParser.parse_ledger_with_includes(content, test_dir)
+               LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       assert length(transactions) == 1
       assert Enum.at(transactions, 0).payee == "Opening Balance"
@@ -1967,7 +1970,7 @@ defmodule ExLedger.LedgerParserTest do
       {:ok, content} = File.read(main_file)
 
       assert {:ok, transactions, accounts} =
-               LedgerParser.parse_ledger_with_includes(content, test_dir)
+               LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       # Should have both transactions
       assert length(transactions) == 2
@@ -2007,7 +2010,7 @@ defmodule ExLedger.LedgerParserTest do
       {:ok, content} = File.read(ledger_file)
 
       assert {:ok, transactions, accounts} =
-               LedgerParser.parse_ledger_with_includes(content, test_dir)
+               LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       # Should have both transactions
       assert length(transactions) == 2
@@ -2037,7 +2040,7 @@ defmodule ExLedger.LedgerParserTest do
 
       {:ok, content} = File.read(main_file)
       # Should return an error about the parse failure in the included file
-      assert {:error, _} = LedgerParser.parse_ledger_with_includes(content, test_dir)
+      assert {:error, _} = LedgerParser.parse_ledger(content, base_dir: test_dir)
     end
 
     test "returns import chain when an included file fails to parse", %{test_dir: test_dir} do
@@ -2063,11 +2066,10 @@ defmodule ExLedger.LedgerParserTest do
                 file: "bad.ledger",
                 import_chain: [{"main.ledger", 1}]
               }} =
-               LedgerParser.parse_ledger_with_includes(
+               LedgerParser.parse_ledger(
                  content,
-                 test_dir,
-                 MapSet.new(),
-                 "main.ledger"
+                 base_dir: test_dir,
+                 source_file: "main.ledger"
                )
     end
   end
@@ -2199,7 +2201,7 @@ defmodule ExLedger.LedgerParserTest do
       """
 
       {:ok, transactions, accounts} =
-        LedgerParser.parse_ledger_with_includes(input, ".", MapSet.new(), nil)
+        LedgerParser.parse_ledger(input, base_dir: ".")
 
       # Resolve aliases before calculating balance
       resolved = LedgerParser.resolve_transaction_aliases(transactions, accounts)
@@ -2232,7 +2234,7 @@ defmodule ExLedger.LedgerParserTest do
       """
 
       {:ok, transactions, accounts} =
-        LedgerParser.parse_ledger_with_includes(input, ".", MapSet.new(), nil)
+        LedgerParser.parse_ledger(input, base_dir: ".")
 
       # Without resolving aliases, stats would count "food" and "checking" as separate accounts
       resolved = LedgerParser.resolve_transaction_aliases(transactions, accounts)
@@ -2256,7 +2258,7 @@ defmodule ExLedger.LedgerParserTest do
       """
 
       {:ok, transactions, accounts} =
-        LedgerParser.parse_ledger_with_includes(input, ".", MapSet.new(), nil)
+        LedgerParser.parse_ledger(input, base_dir: ".")
 
       # Resolve aliases before listing
       resolved = LedgerParser.resolve_transaction_aliases(transactions, accounts)
@@ -2282,7 +2284,7 @@ defmodule ExLedger.LedgerParserTest do
       """
 
       {:ok, transactions, accounts} =
-        LedgerParser.parse_ledger_with_includes(input, ".", MapSet.new(), nil)
+        LedgerParser.parse_ledger(input, base_dir: ".")
 
       account_list = LedgerParser.list_accounts(transactions, accounts)
 
@@ -2309,7 +2311,7 @@ defmodule ExLedger.LedgerParserTest do
       """
 
       {:ok, transactions, accounts} =
-        LedgerParser.parse_ledger_with_includes(input, ".", MapSet.new(), nil)
+        LedgerParser.parse_ledger(input, base_dir: ".")
 
       # Resolve aliases before budget calculation
       resolved = LedgerParser.resolve_transaction_aliases(transactions, accounts)
@@ -2623,10 +2625,10 @@ defmodule ExLedger.LedgerParserTest do
           Liabilities:CreditCard
       """
 
-      result = LedgerParser.parse_ledger(input, "bookings.ledger")
+      result = LedgerParser.parse_ledger(input, source_file: "bookings.ledger")
 
       case result do
-        {:ok, transactions} ->
+        {:ok, transactions, _accounts} ->
           assert length(transactions) == 4
 
           # Check first transaction

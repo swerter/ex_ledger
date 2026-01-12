@@ -80,7 +80,7 @@ defmodule ExLedger.RegisterPrintCheckTest do
         Equity:Opening
     """
 
-    {:ok, transactions} = ExLedger.LedgerParser.parse_ledger(ledger)
+    {:ok, transactions, _accounts} = ExLedger.LedgerParser.parse_ledger(ledger)
     accounts = ExLedger.LedgerParser.extract_account_declarations(ledger)
 
     assert {:error, "Equity:Opening"} =
@@ -94,7 +94,7 @@ defmodule ExLedger.RegisterPrintCheckTest do
         Equity:Opening
     """
 
-    {:ok, transactions} = ExLedger.LedgerParser.parse_ledger(ledger)
+    {:ok, transactions, _accounts} = ExLedger.LedgerParser.parse_ledger(ledger)
     declared = ExLedger.LedgerParser.extract_payee_declarations(ledger)
 
     assert {:error, "Store"} = ExLedger.LedgerParser.check_payees(transactions, declared)

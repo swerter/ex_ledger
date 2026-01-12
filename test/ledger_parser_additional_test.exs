@@ -129,7 +129,7 @@ defmodule ExLedger.LedgerParserAdditionalTest do
 
   describe "parse_ledger/1" do
     test "returns empty list for empty input" do
-      assert {:ok, []} = LedgerParser.parse_ledger("")
+      assert {:ok, [], _accounts} = LedgerParser.parse_ledger("")
     end
   end
 
@@ -191,7 +191,7 @@ defmodule ExLedger.LedgerParserAdditionalTest do
           Equity:Opening
       """
 
-      assert {:ok, [transaction]} = LedgerParser.parse_ledger(input, "main.ledger")
+      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input, source_file: "main.ledger")
       assert transaction.source_file == "main.ledger"
       assert transaction.source_line == 1
     end
@@ -210,7 +210,7 @@ defmodule ExLedger.LedgerParserAdditionalTest do
           Equity:Opening
       """
 
-      assert {:ok, transactions} = LedgerParser.parse_ledger(input, "main.ledger")
+      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input, source_file: "main.ledger")
       assert Enum.map(transactions, & &1.payee) == ["Payee", "Payee Two"]
       assert Enum.map(transactions, & &1.source_line) == [4, 8]
     end
@@ -218,7 +218,7 @@ defmodule ExLedger.LedgerParserAdditionalTest do
 
   describe "parse_ledger_with_includes/4" do
     test "returns empty result for empty content" do
-      assert {:ok, [], %{}} = LedgerParser.parse_ledger_with_includes("", ".", MapSet.new(), nil)
+      assert {:ok, [], %{}} = LedgerParser.parse_ledger("", base_dir: ".")
     end
 
     test "adds source files to included transactions", %{tmp_dir: tmp_dir} do
@@ -239,11 +239,10 @@ defmodule ExLedger.LedgerParserAdditionalTest do
       """
 
       assert {:ok, transactions, _accounts} =
-               LedgerParser.parse_ledger_with_includes(
+               LedgerParser.parse_ledger(
                  content,
-                 tmp_dir,
-                 MapSet.new(),
-                 "main.ledger"
+                 base_dir: tmp_dir,
+                 source_file: "main.ledger"
                )
 
       assert Enum.at(transactions, 0).source_file == "included.ledger"
@@ -270,11 +269,10 @@ defmodule ExLedger.LedgerParserAdditionalTest do
       """
 
       assert {:ok, [transaction], _accounts} =
-               LedgerParser.parse_ledger_with_includes(
+               LedgerParser.parse_ledger(
                  content,
-                 tmp_dir,
-                 MapSet.new(),
-                 "main.ledger"
+                 base_dir: tmp_dir,
+                 source_file: "main.ledger"
                )
 
       assert transaction.payee == "Included"

@@ -73,7 +73,7 @@ defmodule ExLedger do
   """
   @spec format_ledger(String.t()) :: {:ok, String.t()} | {:error, term()}
   def format_ledger(input) when is_binary(input) do
-    with {:ok, transactions} <- LedgerParser.parse_ledger(input) do
+    with {:ok, transactions, _accounts} <- LedgerParser.parse_ledger(input) do
       {:ok, LedgerParser.format_transactions(transactions)}
     end
   end
@@ -91,28 +91,30 @@ defmodule ExLedger do
   defdelegate parse_transaction(input), to: LedgerParser
 
   @doc """
-  Parses multiple transactions from a ledger string.
+  Parses a ledger string with support for include directives and account declarations.
+
+  Returns `{:ok, transactions, accounts}` with all transactions from the main content and any
+  included files, plus a map of account declarations.
+
+  ## Options
+    * `:base_dir` - Base directory for resolving relative include paths (default: ".")
+    * `:source_file` - Source file name for error reporting (default: nil)
 
   ## Examples
 
       iex> input = "2024/01/01 Opening\n    Assets:Cash  $10.00\n    Equity:Opening\n"
-      iex> {:ok, transactions} = ExLedger.parse_ledger(input)
+      iex> {:ok, transactions, accounts} = ExLedger.parse_ledger(input)
       iex> length(transactions)
       1
-  """
-  defdelegate parse_ledger(input), to: LedgerParser
-
-  @doc """
-  Parses a ledger string while attaching source file metadata.
-
-  ## Examples
 
       iex> input = "2024/01/01 Opening\n    Assets:Cash  $10.00\n    Equity:Opening\n"
-      iex> {:ok, [transaction]} = ExLedger.parse_ledger(input, "journal.ledger")
+      iex> {:ok, [transaction], _accounts} = ExLedger.parse_ledger(input, source_file: "journal.ledger")
       iex> transaction.source_file
       "journal.ledger"
   """
-  defdelegate parse_ledger(input, source_file), to: LedgerParser
+  def parse_ledger(input, opts \\ []) do
+    LedgerParser.parse_ledger(input, opts)
+  end
 
   @doc """
   Checks whether a ledger file parses successfully.
@@ -148,19 +150,6 @@ defmodule ExLedger do
     LedgerParser.check_string(content, base_dir)
   end
 
-  @doc """
-  Parses a ledger file and resolves include directives.
-
-  ## Examples
-
-      iex> input = "2024/01/01 Opening\n    Assets:Cash  $10.00\n    Equity:Opening\n"
-      iex> {:ok, transactions, accounts} = ExLedger.parse_ledger_with_includes(input, ".")
-      iex> length(transactions) > 0 and is_map(accounts)
-      true
-  """
-  def parse_ledger_with_includes(input, base_dir, seen_files \\ MapSet.new(), source_file \\ nil) do
-    LedgerParser.parse_ledger_with_includes(input, base_dir, seen_files, source_file)
-  end
 
   @doc """
   Expands include directives and returns the resolved ledger content.

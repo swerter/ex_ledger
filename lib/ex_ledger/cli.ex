@@ -357,12 +357,7 @@ defmodule ExLedger.CLI do
     with {:file_read, {:ok, contents}} <- {:file_read, File.read(file)},
          {:parsed, {:ok, transactions, accounts}} <-
            {:parsed,
-            LedgerParser.parse_ledger_with_includes(
-              contents,
-              base_dir,
-              MapSet.new(),
-              filename
-            )} do
+            LedgerParser.parse_ledger(contents, base_dir: base_dir, source_file: filename)} do
       fun.(transactions, accounts, contents)
     else
       {:file_read, {:error, reason}} ->

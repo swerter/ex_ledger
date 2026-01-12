@@ -19,11 +19,12 @@ defmodule ExLedger.LineNumberTest do
       """
 
       # Line 11 has "sdf" which should cause a missing_date error
-      assert {:error, {reason, line, _source_file}} =
-               LedgerParser.parse_ledger(input, "test.ledger")
+      assert {:error, error} =
+               LedgerParser.parse_ledger(input, source_file: "test.ledger")
 
-      assert reason == :missing_date
-      assert line == 11
+      assert error.reason == :missing_date
+      assert error.line == 11
+      assert error.file == "test.ledger"
     end
 
     test "reports correct line number with simple account declaration" do
@@ -34,11 +35,12 @@ defmodule ExLedger.LineNumberTest do
       """
 
       # Line 3 has "invalid line here" which should cause a missing_date error
-      assert {:error, {reason, line, _source_file}} =
-               LedgerParser.parse_ledger(input, "test.ledger")
+      assert {:error, error} =
+               LedgerParser.parse_ledger(input, source_file: "test.ledger")
 
-      assert reason == :missing_date
-      assert line == 3
+      assert error.reason == :missing_date
+      assert error.line == 3
+      assert error.file == "test.ledger"
     end
 
     test "reports correct line number with multiple account declarations" do
@@ -53,11 +55,12 @@ defmodule ExLedger.LineNumberTest do
       """
 
       # Line 7 has "bad data"
-      assert {:error, {reason, line, _source_file}} =
-               LedgerParser.parse_ledger(input, "test.ledger")
+      assert {:error, error} =
+               LedgerParser.parse_ledger(input, source_file: "test.ledger")
 
-      assert reason == :missing_date
-      assert line == 7
+      assert error.reason == :missing_date
+      assert error.line == 7
+      assert error.file == "test.ledger"
     end
 
     test "reports correct line number with account declaration and valid transaction before error" do
@@ -72,11 +75,12 @@ defmodule ExLedger.LineNumberTest do
       """
 
       # Line 7 has "error line"
-      assert {:error, {reason, line, _source_file}} =
-               LedgerParser.parse_ledger(input, "test.ledger")
+      assert {:error, error} =
+               LedgerParser.parse_ledger(input, source_file: "test.ledger")
 
-      assert reason == :missing_date
-      assert line == 7
+      assert error.reason == :missing_date
+      assert error.line == 7
+      assert error.file == "test.ledger"
     end
 
     test "successfully parses when no errors present" do
@@ -88,7 +92,7 @@ defmodule ExLedger.LineNumberTest do
           Assets:Checking
       """
 
-      assert {:ok, transactions} = LedgerParser.parse_ledger(input, "test.ledger")
+      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input, source_file: "test.ledger")
       assert length(transactions) == 1
     end
   end
@@ -130,11 +134,10 @@ defmodule ExLedger.LineNumberTest do
       main_file_content: main_file_content
     } do
       result =
-        LedgerParser.parse_ledger_with_includes(
+        LedgerParser.parse_ledger(
           main_file_content,
-          test_dir,
-          MapSet.new(),
-          "main.ledger"
+          base_dir: test_dir,
+          source_file: "main.ledger"
         )
 
       assert {:error, error} = result

@@ -831,16 +831,8 @@ defmodule ExLedger.LedgerParser do
     end
   end
 
-  @doc """
-  Parses a complete ledger file with multiple transactions.
-  """
-  @spec parse_ledger(String.t()) ::
-          {:ok, [transaction()]} | {:error, {parse_error(), non_neg_integer()}}
-  def parse_ledger(""), do: {:ok, []}
-
-  def parse_ledger(input) do
-    parse_ledger(input, nil)
-  end
+  # Private function to parse ledger content without resolving includes.
+  # Used internally by parse_ledger_with_includes_with_import to process content chunks.
 
   @doc """
   Checks whether the ledger file at the given path parses successfully.
@@ -852,7 +844,7 @@ defmodule ExLedger.LedgerParser do
 
     with {:ok, contents} <- File.read(path),
          {:ok, _transactions, _accounts} <-
-           parse_ledger_with_includes(contents, base_dir, MapSet.new(), filename) do
+           parse_ledger(contents, base_dir: base_dir, source_file: filename) do
       true
     else
       _ -> false
@@ -869,7 +861,7 @@ defmodule ExLedger.LedgerParser do
 
     with {:ok, contents} <- File.read(path),
          {:ok, _transactions, _accounts} <-
-           parse_ledger_with_includes(contents, base_dir, MapSet.new(), filename) do
+           parse_ledger(contents, base_dir: base_dir, source_file: filename) do
       {:ok, :valid}
     else
       {:error, reason} -> {:error, reason}
@@ -885,17 +877,17 @@ defmodule ExLedger.LedgerParser do
   """
   @spec check_string(String.t(), String.t()) :: boolean()
   def check_string(content, base_dir \\ ".") when is_binary(content) and is_binary(base_dir) do
-    case parse_ledger_with_includes(content, base_dir, MapSet.new(), nil) do
+    case parse_ledger(content, base_dir: base_dir) do
       {:ok, _transactions, _accounts} -> true
       _ -> false
     end
   end
 
-  @spec parse_ledger(String.t(), String.t() | nil) ::
+  @spec parse_ledger_chunk(String.t(), String.t() | nil) ::
           {:ok, [transaction()]} | {:error, {parse_error(), non_neg_integer(), String.t() | nil}}
-  def parse_ledger("", _source_file), do: {:ok, []}
+  defp parse_ledger_chunk("", _source_file), do: {:ok, []}
 
-  def parse_ledger(input, source_file) do
+  defp parse_ledger_chunk(input, source_file) do
     input
     |> split_transactions_with_line_numbers()
     |> Enum.reduce_while({:ok, []}, fn {transaction_string, line}, {:ok, acc} ->
@@ -1123,9 +1115,6 @@ defmodule ExLedger.LedgerParser do
   @doc """
   Parses a ledger file with support for include directives and account declarations.
 
-  The `base_dir` parameter specifies the directory to resolve relative include paths from.
-  This is typically the directory containing the main ledger file.
-
   Include directives have the format:
       include path/to/file.ledger
 
@@ -1143,25 +1132,32 @@ defmodule ExLedger.LedgerParser do
   Returns `{:ok, transactions, accounts}` with all transactions from the main file and all included files,
   and a map of account declarations, or `{:error, reason}` if parsing fails.
 
+  ## Options
+    * `:base_dir` - Base directory for resolving relative include paths (default: ".")
+    * `:source_file` - Source file name for error reporting (default: nil)
+
   ## Examples
 
+      iex> content = "2009/10/29 Panera\\n    Expenses:Food  $4.50\\n    Assets:Checking\\n"
+      iex> LedgerParser.parse_ledger(content)
+      {:ok, [%{date: ~D[2009-10-29], ...}], %{}}
+
       iex> content = "include opening.ledger\\n\\n2009/10/29 Panera\\n    Expenses:Food  $4.50\\n    Assets:Checking\\n"
-      iex> LedgerParser.parse_ledger_with_includes(content, "/path/to/ledger/dir")
+      iex> LedgerParser.parse_ledger(content, base_dir: "/path/to/ledger/dir")
       {:ok, [%{date: ~D[2009-01-01], ...}, %{date: ~D[2009-10-29], ...}], %{}}
 
   """
-  @spec parse_ledger_with_includes(String.t(), String.t()) ::
+  @spec parse_ledger(String.t(), keyword()) ::
           {:ok, [transaction()], %{String.t() => atom()}} | {:error, ledger_error()}
-  @spec parse_ledger_with_includes(String.t(), String.t(), MapSet.t(String.t())) ::
-          {:ok, [transaction()], %{String.t() => atom()}} | {:error, ledger_error()}
-  @spec parse_ledger_with_includes(String.t(), String.t(), MapSet.t(String.t()), String.t() | nil) ::
-          {:ok, [transaction()], %{String.t() => atom()}} | {:error, ledger_error()}
-  def parse_ledger_with_includes(input, base_dir, seen_files \\ MapSet.new(), source_file \\ nil)
+  def parse_ledger(input, opts \\ [])
 
-  def parse_ledger_with_includes("", _base_dir, _seen_files, _source_file), do: {:ok, [], %{}}
+  def parse_ledger("", _opts), do: {:ok, [], %{}}
 
-  def parse_ledger_with_includes(input, base_dir, seen_files, source_file)
-      when is_binary(source_file) or is_nil(source_file) do
+  def parse_ledger(input, opts) when is_binary(input) do
+    base_dir = Keyword.get(opts, :base_dir, ".")
+    source_file = Keyword.get(opts, :source_file, nil)
+    seen_files = Keyword.get(opts, :seen_files, MapSet.new())
+
     parse_ledger_with_includes_with_import(input, base_dir, seen_files, source_file, nil)
   end
 
@@ -1286,7 +1282,7 @@ defmodule ExLedger.LedgerParser do
     if skip_content_chunk?(content) do
       process_lines_and_includes(include_and_after, context)
     else
-      case parse_ledger(content, context.source_file) do
+      case parse_ledger_chunk(content, context.source_file) do
         {:ok, transactions} ->
           updated_context = append_transactions(context, transactions)
           process_lines_and_includes(include_and_after, updated_context)

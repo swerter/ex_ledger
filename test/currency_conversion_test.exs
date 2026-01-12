@@ -22,7 +22,7 @@ defmodule ExLedger.CurrencyConversionTest do
         Assets:Paypal:USD    CHF 90.00
       """
 
-      {:ok, transactions} = LedgerParser.parse_ledger(input)
+      {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
 
       # Calculate balance
       balances = calculate_balances(transactions)
@@ -55,7 +55,7 @@ defmodule ExLedger.CurrencyConversionTest do
         Assets:Paypal:USD    CHF 90.00
       """
 
-      {:ok, transactions} = LedgerParser.parse_ledger(input)
+      {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
 
       # Calculate total balance across all accounts by currency
       totals = calculate_total_balance(transactions)
@@ -99,7 +99,7 @@ defmodule ExLedger.CurrencyConversionTest do
         Income:Sales:USD     CHF -132.00
       """
 
-      {:ok, transactions} = LedgerParser.parse_ledger(input)
+      {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
 
       # After conversion, the books should balance to zero in CHF terms
       balances = calculate_balances(transactions)

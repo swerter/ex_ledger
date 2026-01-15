@@ -111,16 +111,32 @@ defmodule ExLedger.CLI do
       ]
 
       with_resolved_transactions(file, fn resolved_transactions, accounts, _contents ->
-        case maybe_validate_strict(resolved_transactions, accounts, strict?) do
-          :ok ->
-            resolved_transactions
-            |> LedgerParser.balance_report(report_regex, format_opts)
-            |> IO.write()
-
-          {:error, {:undeclared_account, account_name}} ->
-            halt_error("account '#{account_name}' is used but not declared (strict mode)", 1)
-        end
+        run_balance_with_validation(
+          resolved_transactions,
+          accounts,
+          strict?,
+          report_regex,
+          format_opts
+        )
       end)
+    end
+  end
+
+  defp run_balance_with_validation(
+         resolved_transactions,
+         accounts,
+         strict?,
+         report_regex,
+         format_opts
+       ) do
+    case maybe_validate_strict(resolved_transactions, accounts, strict?) do
+      :ok ->
+        resolved_transactions
+        |> LedgerParser.balance_report(report_regex, format_opts)
+        |> IO.write()
+
+      {:error, {:undeclared_account, account_name}} ->
+        halt_error("account '#{account_name}' is used but not declared (strict mode)", 1)
     end
   end
 
@@ -491,42 +507,23 @@ defmodule ExLedger.CLI do
   defp filter_list(items, nil), do: items
 
   defp filter_list(items, pattern) do
-    case compile_regex(pattern) do
-      {:ok, regex} ->
-        Enum.filter(items, fn item -> Regex.match?(regex, item) end)
-
-      {:error, :invalid_regex} ->
-        IO.puts(:stderr, "Error: regex pattern is too long (max #{@max_regex_length} characters)")
-        System.halt(1)
-
-      {:error, reason} ->
-        IO.puts(:stderr, "Error: invalid regex pattern '#{pattern}': #{inspect(reason)}")
-        System.halt(1)
-    end
-  end
-
-  defp compile_regex(pattern) do
-    if String.length(pattern) > @max_regex_length do
-      {:error, :invalid_regex}
-    else
-      Regex.compile(pattern)
-    end
+    regex = compile_filter_regex(pattern)
+    Enum.filter(items, fn item -> Regex.match?(regex, item) end)
   end
 
   defp compile_filter_regex(nil), do: nil
 
   defp compile_filter_regex(pattern) do
-    case compile_regex(pattern) do
+    if String.length(pattern) > @max_regex_length do
+      halt_error("regex pattern is too long (max #{@max_regex_length} characters)", 1)
+    end
+
+    case Regex.compile(pattern) do
       {:ok, regex} ->
         regex
 
-      {:error, :invalid_regex} ->
-        IO.puts(:stderr, "Error: regex pattern is too long (max #{@max_regex_length} characters)")
-        System.halt(1)
-
       {:error, reason} ->
-        IO.puts(:stderr, "Error: invalid regex pattern '#{pattern}': #{inspect(reason)}")
-        System.halt(1)
+        halt_error("invalid regex pattern '#{pattern}': #{inspect(reason)}", 1)
     end
   end
 

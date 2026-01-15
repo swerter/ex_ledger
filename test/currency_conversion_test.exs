@@ -1,7 +1,6 @@
 defmodule ExLedger.CurrencyConversionTest do
   use ExUnit.Case
   alias ExLedger.LedgerParser
-  import ExUnit.CaptureIO
 
   @moduledoc """
   Tests to demonstrate inconsistencies between exledger and ledger CLI
@@ -107,13 +106,21 @@ defmodule ExLedger.CurrencyConversionTest do
 
       # Assets should be CHF 132.00, USD 0.00
       assets = Map.get(balances, "Assets:Paypal:USD")
-      assert assets["CHF"] == 132.00, "Assets account should have CHF 132.00 after conversion, got: #{inspect(assets)}"
-      assert assets["USD"] == 0.00, "Assets account should have USD 0.00 after conversion, got: #{inspect(assets)}"
+
+      assert assets["CHF"] == 132.00,
+             "Assets account should have CHF 132.00 after conversion, got: #{inspect(assets)}"
+
+      assert assets["USD"] == 0.00,
+             "Assets account should have USD 0.00 after conversion, got: #{inspect(assets)}"
 
       # Income should be CHF -132.00, USD 0.00
       income = Map.get(balances, "Income:Sales:USD")
-      assert income["CHF"] == -132.00, "Income account should have CHF -132.00 after conversion, got: #{inspect(income)}"
-      assert income["USD"] == 0.00, "Income account should have USD 0.00 after conversion, got: #{inspect(income)}"
+
+      assert income["CHF"] == -132.00,
+             "Income account should have CHF -132.00 after conversion, got: #{inspect(income)}"
+
+      assert income["USD"] == 0.00,
+             "Income account should have USD 0.00 after conversion, got: #{inspect(income)}"
 
       # Total should balance to zero in CHF
       assert Map.get(totals, "CHF") == 0.00, """
@@ -136,7 +143,9 @@ defmodule ExLedger.CurrencyConversionTest do
       account = posting.account
 
       case posting.amount do
-        nil -> acc
+        nil ->
+          acc
+
         amount_map ->
           currency = amount_map.currency
           amount = amount_map.value
@@ -154,7 +163,9 @@ defmodule ExLedger.CurrencyConversionTest do
     |> Enum.flat_map(fn tx -> tx.postings end)
     |> Enum.reduce(%{}, fn posting, acc ->
       case posting.amount do
-        nil -> acc
+        nil ->
+          acc
+
         amount_map ->
           currency = amount_map.currency
           amount = amount_map.value

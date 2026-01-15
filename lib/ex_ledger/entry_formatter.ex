@@ -92,6 +92,6 @@ defmodule ExLedger.EntryFormatter do
   end
 
   defp fetch_value(map, key, default \\ nil) do
-    Map.get(map, key, Map.get(map, to_string(key), default))
+    Map.get(map, key, default)
   end
 end

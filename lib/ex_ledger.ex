@@ -53,21 +53,15 @@ defmodule ExLedger do
   end
 
   @doc """
-  Returns list of month abbreviations.
-  """
-  @spec month_names() :: [String.t()]
-  def month_names, do: @month_names
-
-  @doc """
   Parses ledger content and returns formatted transactions.
 
   ## Examples
 
-      iex> input = """
+      iex> input = \"""
       ...> 2024/01/01 Opening
       ...>     Assets:Cash  $10.00
       ...>     Equity:Opening
-      ...> """
+      ...> \"""
       iex> ExLedger.format_ledger(input)
       {:ok, "2024/01/01 Opening\n    Assets:Cash  $10.00\n    Equity:Opening  $-10.00\n"}
   """
@@ -149,7 +143,6 @@ defmodule ExLedger do
   def check_string(content, base_dir \\ ".") do
     LedgerParser.check_string(content, base_dir)
   end
-
 
   @doc """
   Expands include directives and returns the resolved ledger content.

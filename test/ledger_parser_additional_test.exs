@@ -191,7 +191,9 @@ defmodule ExLedger.LedgerParserAdditionalTest do
           Equity:Opening
       """
 
-      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input, source_file: "main.ledger")
+      assert {:ok, [transaction], _accounts} =
+               LedgerParser.parse_ledger(input, source_file: "main.ledger")
+
       assert transaction.source_file == "main.ledger"
       assert transaction.source_line == 1
     end
@@ -210,7 +212,9 @@ defmodule ExLedger.LedgerParserAdditionalTest do
           Equity:Opening
       """
 
-      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input, source_file: "main.ledger")
+      assert {:ok, transactions, _accounts} =
+               LedgerParser.parse_ledger(input, source_file: "main.ledger")
+
       assert Enum.map(transactions, & &1.payee) == ["Payee", "Payee Two"]
       assert Enum.map(transactions, & &1.source_line) == [4, 8]
     end
@@ -600,7 +604,10 @@ defmodule ExLedger.LedgerParserAdditionalTest do
       result = LedgerParser.balance_by_period(transactions, "weekly")
 
       assert Enum.at(result["periods"], 0).label =~ "Week"
-      assert result["balances"][Enum.at(result["periods"], 0).label]["Expenses:Food"] |> hd() |> Map.get(:amount) == 5.0
+
+      assert result["balances"][Enum.at(result["periods"], 0).label]["Expenses:Food"]
+             |> hd()
+             |> Map.get(:amount) == 5.0
     end
 
     test "returns empty periods for unknown grouping" do

@@ -92,7 +92,9 @@ defmodule ExLedger.LineNumberTest do
           Assets:Checking
       """
 
-      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input, source_file: "test.ledger")
+      assert {:ok, transactions, _accounts} =
+               LedgerParser.parse_ledger(input, source_file: "test.ledger")
+
       assert length(transactions) == 1
     end
   end

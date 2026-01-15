@@ -25,12 +25,6 @@ defmodule ExLedgerTest do
     end
   end
 
-  describe "month_names/0" do
-    test "returns ledger month abbreviations" do
-      assert ExLedger.month_names() == ~w(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)
-    end
-  end
-
   describe "format_ledger/1" do
     test "parses and formats ledger content" do
       input = """
@@ -40,7 +34,9 @@ defmodule ExLedgerTest do
       """
 
       assert {:ok, output} = ExLedger.format_ledger(input)
-      assert output == "2024/01/01 Opening\n    Assets:Cash  $10.00\n    Equity:Opening  $-10.00\n"
+
+      assert output ==
+               "2024/01/01 Opening\n    Assets:Cash  $10.00\n    Equity:Opening  $-10.00\n"
     end
   end
 end

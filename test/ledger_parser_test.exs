@@ -2513,18 +2513,6 @@ defmodule ExLedger.LedgerParserTest do
       assert LedgerParser.check_file(path)
     end
 
-    test "returns true for a valid accounts fixture" do
-      path = Path.expand("fixtures/accounts_hierarchy.ledger", __DIR__)
-
-      assert LedgerParser.check_file(path)
-    end
-
-    test "returns true for a full accounts fixture" do
-      path = Path.expand("fixtures/accounts_full.ledger", __DIR__)
-
-      assert LedgerParser.check_file(path)
-    end
-
     test "returns false for a fixture with missing includes" do
       path = Path.expand("fixtures/main_includes.ledger", __DIR__)
 

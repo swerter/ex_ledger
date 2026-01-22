@@ -1,0 +1,13 @@
+; Bills and recurring expenses with attachments
+; This file tracks vendor invoices and bills
+
+2025/01/05 Swiss Post - Postage and Shipping
+    ; Attachment: bills/2025-01-05_Swiss_Post.pdf
+    ; Attachment: bills/2025-01-05_another.pdf
+    Expenses:Office:Postage  145.50 CHF
+    Assets:Bank:Checking
+
+2025/01/12 AWS - Cloud Hosting January
+    ; Attachment: bills/2025-01-12_AWS.pdf
+    Expenses:IT:Cloud  289.00 $
+    Assets:Bank:Checking

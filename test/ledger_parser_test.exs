@@ -995,6 +995,45 @@ defmodule ExLedger.LedgerParserTest do
       assert {:ok, [], _accounts} = LedgerParser.parse_ledger("\n\n")
     end
 
+    test "parses fixture bills.ledger with attachments" do
+      path = Path.expand("fixtures/bills.ledger", __DIR__)
+      content = File.read!(path)
+
+      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(content)
+      assert length(transactions) == 2
+
+      first_transaction = hd(transactions)
+      assert first_transaction.date == ~D[2025-01-05]
+      assert first_transaction.payee == "Swiss Post - Postage and Shipping"
+
+      [first_posting, second_posting] = first_transaction.postings
+
+      assert first_posting.account == "Expenses:Office:Postage"
+
+      assert first_posting.amount == %{
+               value: 145.50,
+               currency: "CHF",
+               currency_position: :trailing
+             }
+
+      assert second_posting.account == "Assets:Bank:Checking"
+
+      assert second_posting.amount == %{
+               value: -145.50,
+               currency: "CHF",
+               currency_position: :trailing
+             }
+
+      assert String.contains?(content, "; Attachment: bills/2025-01-05_Swiss_Post.pdf")
+      assert String.contains?(content, "; Attachment: bills/2025-01-05_another.pdf")
+
+      assert first_posting.metadata["Attachment"] == "bills/2025-01-05_another.pdf"
+
+      last_transaction = List.last(transactions)
+      assert last_transaction.date == ~D[2025-01-12]
+      assert last_transaction.payee == "AWS - Cloud Hosting January"
+    end
+
     test "parses consecutive transactions without blank lines between them" do
       input = """
       2024/1/21 Transaction 1

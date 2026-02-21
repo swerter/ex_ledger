@@ -632,7 +632,17 @@ defmodule ExLedger.Parser.Core do
     {metadata, tags, comments, actual_date, effective_date} =
       Enum.reduce(notes, {%{}, [], [], nil, nil}, fn
         {:metadata_kv, key, value}, {meta, tags, comments, actual, effective} ->
-          {Map.put(meta, key, value), tags, comments, actual, effective}
+          updated_meta =
+            if key == "Attachment" do
+              Map.update(meta, key, [value], fn
+                existing when is_list(existing) -> existing ++ [value]
+                existing -> [existing, value]
+              end)
+            else
+              Map.put(meta, key, value)
+            end
+
+          {updated_meta, tags, comments, actual, effective}
 
         {:tag, tag}, {meta, tags, comments, actual, effective} ->
           {meta, [tag | tags], comments, actual, effective}

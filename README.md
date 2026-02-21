@@ -14,6 +14,7 @@ An Elixir-based [ledger-cli](https://ledger-cli.org/docs.html) file parser and p
 - Query interface for data extraction
 - Strict mode for enforcing declared accounts
 - Periodic/scheduled transactions
+- Posting metadata (tags, comments, attachments)
 
 ## Installation
 
@@ -210,10 +211,47 @@ payee Gas Station
     Expenses:Gas                $40.00
     checking                    ; uses alias
 
+; Transaction with metadata, tags, and attachments
+2024/01/25 Office Supplies Store
+    ; Attachment: receipts/2024-01-25_office_supplies.pdf
+    ; Attachment: receipts/2024-01-25_warranty.pdf
+    Expenses:Office             $75.00  ; :business:Q1:
+    Assets:Checking
+
 ; Periodic transaction (budget)
 ~ monthly
     Expenses:Rent               $1000.00
     Assets:Checking
+```
+
+### Posting Metadata
+
+Postings can include metadata in the form of comments, tags, and key-value pairs:
+
+```ledger
+2024/01/25 Vendor Name
+    ; This is a comment
+    ; Category: Office
+    ; Attachment: path/to/receipt.pdf
+    Expenses:Office             $100.00  ; :tag1:tag2:
+    Assets:Checking
+```
+
+**Multiple Attachments:** When a posting has multiple `Attachment` metadata entries, they are stored as a list:
+
+```elixir
+# Parsing a transaction with multiple attachments
+{:ok, [transaction], _} = ExLedger.parse_ledger("""
+2024/01/25 Vendor
+    ; Attachment: receipt1.pdf
+    ; Attachment: receipt2.pdf
+    Expenses:Office  $100.00
+    Assets:Checking
+""")
+
+[posting | _] = transaction.postings
+posting.metadata["Attachment"]
+# => ["receipt1.pdf", "receipt2.pdf"]
 ```
 
 ## Library Usage

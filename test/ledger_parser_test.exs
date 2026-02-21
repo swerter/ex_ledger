@@ -1,5 +1,6 @@
 defmodule ExLedger.LedgerParserTest do
   use ExUnit.Case
+  alias ExLedger.EntryFormatter
   alias ExLedger.LedgerParser
   alias ExLedger.TestHelpers
 
@@ -1027,11 +1028,63 @@ defmodule ExLedger.LedgerParserTest do
       assert String.contains?(content, "; Attachment: bills/2025-01-05_Swiss_Post.pdf")
       assert String.contains?(content, "; Attachment: bills/2025-01-05_another.pdf")
 
-      assert first_posting.metadata["Attachment"] == "bills/2025-01-05_another.pdf"
+      assert first_posting.metadata["Attachment"] == [
+               "bills/2025-01-05_Swiss_Post.pdf",
+               "bills/2025-01-05_another.pdf"
+             ]
 
       last_transaction = List.last(transactions)
       assert last_transaction.date == ~D[2025-01-12]
       assert last_transaction.payee == "AWS - Cloud Hosting January"
+    end
+
+    test "parses multiple attachments into metadata map" do
+      input = """
+      2025/01/05 Swiss Post - Postage and Shipping
+          ; Attachment: receipts/2025-01-05_Swiss_Post.pdf
+          ; Attachment: receipts/2025-01-12_AWS.pdf
+          Expenses:Office:Postage  145.50 CHF  ; :office:Q1:
+          Assets:Bank:Checking
+      """
+
+      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
+
+      [first_posting | _rest] = transaction.postings
+      attachments = Map.get(first_posting.metadata, "Attachment")
+
+      assert is_list(attachments)
+      assert length(attachments) == 2
+    end
+
+    test "formats multiple attachments as separate lines" do
+      input = """
+      2025/01/05 Swiss Post - Postage and Shipping
+          ; Attachment: receipts/2025-01-05_Swiss_Post.pdf
+          ; Attachment: receipts/2025-01-12_AWS.pdf
+          Expenses:Office:Postage  145.50 CHF  ; :office:Q1:
+          Assets:Bank:Checking
+      """
+
+      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
+
+      formatted = EntryFormatter.format_entry(transaction, nil, true)
+
+      assert String.contains?(
+               formatted,
+               "    ; Attachment: receipts/2025-01-05_Swiss_Post.pdf\n"
+             )
+
+      assert String.contains?(
+               formatted,
+               "    ; Attachment: receipts/2025-01-12_AWS.pdf\n"
+             )
+
+      attachment_lines =
+        formatted
+        |> String.split("\n")
+        |> Enum.filter(&String.starts_with?(&1, "    ; Attachment: "))
+
+      assert length(attachment_lines) == 2
     end
 
     test "parses consecutive transactions without blank lines between them" do

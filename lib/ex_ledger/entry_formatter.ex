@@ -83,7 +83,13 @@ defmodule ExLedger.EntryFormatter do
     metadata_lines =
       metadata
       |> Enum.sort_by(fn {key, _value} -> key end)
-      |> Enum.map(fn {key, value} -> "    ; #{key}: #{value}" end)
+      |> Enum.flat_map(fn
+        {key, values} when is_list(values) ->
+          Enum.map(values, fn value -> "    ; #{key}: #{value}" end)
+
+        {key, value} ->
+          ["    ; #{key}: #{value}"]
+      end)
 
     tag_lines = Enum.map(tags, &"    ; :#{&1}:")
     comment_lines = Enum.map(comments, &"    ; #{&1}")

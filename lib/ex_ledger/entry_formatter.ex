@@ -14,12 +14,18 @@ defmodule ExLedger.EntryFormatter do
 
   def format_entry(transaction, %Date{} = date, include_notes) do
     header = build_transaction_header(transaction, date)
+    transaction_notes = if include_notes, do: format_transaction_notes(transaction), else: []
+
+    transaction_metadata = fetch_value(transaction, :metadata, %{})
 
     postings =
-      Enum.flat_map(transaction.postings, fn posting ->
+      transaction.postings
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {posting, index} ->
         account = fetch_value(posting, :account, "")
         amount = format_posting_amount(fetch_value(posting, :amount))
-        notes = if include_notes, do: format_posting_notes(posting), else: []
+        metadata_to_filter = if include_notes and index == 0, do: transaction_metadata, else: %{}
+        notes = if include_notes, do: format_posting_notes(posting, metadata_to_filter), else: []
 
         posting_line =
           if amount == "" do
@@ -31,7 +37,7 @@ defmodule ExLedger.EntryFormatter do
         notes ++ [posting_line]
       end)
 
-    Enum.join([header | postings], "\n") <> "\n"
+    Enum.join([header | transaction_notes] ++ postings, "\n") <> "\n"
   end
 
   defp build_transaction_header(transaction, date) do
@@ -75,8 +81,12 @@ defmodule ExLedger.EntryFormatter do
 
   defp normalize_comment(comment), do: comment
 
-  defp format_posting_notes(posting) do
-    metadata = fetch_value(posting, :metadata, %{})
+  defp format_posting_notes(posting, transaction_metadata) do
+    metadata =
+      posting
+      |> fetch_value(:metadata, %{})
+      |> drop_transaction_metadata(transaction_metadata)
+
     tags = fetch_value(posting, :tags, [])
     comments = fetch_value(posting, :comments, [])
 
@@ -95,6 +105,53 @@ defmodule ExLedger.EntryFormatter do
     comment_lines = Enum.map(comments, &"    ; #{&1}")
 
     metadata_lines ++ tag_lines ++ comment_lines
+  end
+
+  defp drop_transaction_metadata(metadata, transaction_metadata) do
+    Enum.reduce(metadata, %{}, fn {key, value}, acc ->
+      case Map.get(transaction_metadata, key) do
+        nil ->
+          Map.put(acc, key, value)
+
+        transaction_value ->
+          case remove_duplicate_metadata(value, transaction_value) do
+            [] -> acc
+            nil -> acc
+            remaining -> Map.put(acc, key, remaining)
+          end
+      end
+    end)
+  end
+
+  defp remove_duplicate_metadata(values, transaction_values)
+       when is_list(values) and is_list(transaction_values) do
+    values -- transaction_values
+  end
+
+  defp remove_duplicate_metadata(values, transaction_value) when is_list(values) do
+    Enum.reject(values, &(&1 == transaction_value))
+  end
+
+  defp remove_duplicate_metadata(value, transaction_values) when is_list(transaction_values) do
+    if value in transaction_values, do: nil, else: value
+  end
+
+  defp remove_duplicate_metadata(value, transaction_value) do
+    if value == transaction_value, do: nil, else: value
+  end
+
+  defp format_transaction_notes(transaction) do
+    metadata = fetch_value(transaction, :metadata, %{})
+
+    metadata
+    |> Enum.sort_by(fn {key, _value} -> key end)
+    |> Enum.flat_map(fn
+      {key, values} when is_list(values) ->
+        Enum.map(values, fn value -> "    ; #{key}: #{value}" end)
+
+      {key, value} ->
+        ["    ; #{key}: #{value}"]
+    end)
   end
 
   defp fetch_value(map, key, default \\ nil) do

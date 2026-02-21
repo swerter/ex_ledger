@@ -1028,6 +1028,11 @@ defmodule ExLedger.LedgerParserTest do
       assert String.contains?(content, "; Attachment: bills/2025-01-05_Swiss_Post.pdf")
       assert String.contains?(content, "; Attachment: bills/2025-01-05_another.pdf")
 
+      assert first_transaction.metadata["Attachment"] == [
+               "bills/2025-01-05_Swiss_Post.pdf",
+               "bills/2025-01-05_another.pdf"
+             ]
+
       assert first_posting.metadata["Attachment"] == [
                "bills/2025-01-05_Swiss_Post.pdf",
                "bills/2025-01-05_another.pdf"
@@ -1041,19 +1046,46 @@ defmodule ExLedger.LedgerParserTest do
     test "parses multiple attachments into metadata map" do
       input = """
       2025/01/05 Swiss Post - Postage and Shipping
+          Expenses:Office:Postage  145.50 CHF  ; :office:Q1:
           ; Attachment: receipts/2025-01-05_Swiss_Post.pdf
           ; Attachment: receipts/2025-01-12_AWS.pdf
-          Expenses:Office:Postage  145.50 CHF  ; :office:Q1:
           Assets:Bank:Checking
       """
 
       assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
 
-      [first_posting | _rest] = transaction.postings
-      attachments = Map.get(first_posting.metadata, "Attachment")
+      [_first_posting, second_posting] = transaction.postings
+      attachments = Map.get(second_posting.metadata, "Attachment")
 
       assert is_list(attachments)
       assert length(attachments) == 2
+      assert attachments == [
+               "receipts/2025-01-05_Swiss_Post.pdf",
+               "receipts/2025-01-12_AWS.pdf"
+             ]
+    end
+
+    test "parses transaction-level attachments into transaction metadata" do
+      input = """
+      2025/01/05 Swiss Post - Postage and Shipping
+          ; Attachment: receipts/2025-01-05_Swiss_Post.pdf
+          ; Attachment: receipts/2025-01-12_AWS.pdf
+          Expenses:Office:Postage  145.50 CHF
+          Assets:Bank:Checking
+      """
+
+      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
+
+      assert transaction.metadata["Attachment"] == [
+               "receipts/2025-01-05_Swiss_Post.pdf",
+               "receipts/2025-01-12_AWS.pdf"
+             ]
+
+      [first_posting | _rest] = transaction.postings
+      assert first_posting.metadata["Attachment"] == [
+               "receipts/2025-01-05_Swiss_Post.pdf",
+               "receipts/2025-01-12_AWS.pdf"
+             ]
     end
 
     test "formats multiple attachments as separate lines" do

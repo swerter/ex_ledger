@@ -39,6 +39,7 @@ defmodule ExLedger.Parser.Core do
           code: String.t(),
           payee: String.t() | nil,
           comment: String.t() | nil,
+          metadata: %{String.t() => String.t() | [String.t()]},
           predicate: String.t() | nil,
           period: String.t() | nil,
           postings: [posting()],
@@ -310,6 +311,11 @@ defmodule ExLedger.Parser.Core do
       ascii_string([?\s], min: 1)
     ])
 
+  metadata_key =
+    ascii_char([?A..?Z])
+    |> utf8_string([?a..?z, ?A..?Z, ?0..?9, ?_], min: 0)
+    |> reduce({:join_metadata_key, []})
+
   # Inline comment
   inline_comment =
     ignore(optional_whitespace)
@@ -361,9 +367,7 @@ defmodule ExLedger.Parser.Core do
       |> ignore(string(":"))
       |> unwrap_and_tag(:tag),
       # Metadata: Key: Value
-      ascii_char([?A..?Z])
-      |> utf8_string([?a..?z, ?A..?Z, ?0..?9, ?_], min: 0)
-      |> reduce({:join_metadata_key, []})
+      metadata_key
       |> ignore(string(":"))
       |> ignore(ascii_string([?\s], min: 0))
       |> utf8_string([not: ?\n], min: 0)
@@ -380,10 +384,22 @@ defmodule ExLedger.Parser.Core do
     |> concat(posting_with_optional_amount)
     |> reduce({:attach_notes_to_posting, []})
 
+  transaction_metadata_line =
+    ignore(indentation)
+    |> ignore(ascii_string([?;], min: 1))
+    |> ignore(ascii_string([?\s], min: 0))
+    |> concat(metadata_key)
+    |> ignore(string(":"))
+    |> ignore(ascii_string([?\s], min: 0))
+    |> utf8_string([not: ?\n], min: 0)
+    |> reduce({:to_metadata, []})
+    |> ignore(optional(string("\n")))
+
   # Transaction parsers
   defparsec(
     :transaction_parser,
     transaction_header
+    |> times(transaction_metadata_line, min: 0)
     |> times(posting, min: 2)
     |> reduce({:build_transaction, []})
   )
@@ -391,6 +407,7 @@ defmodule ExLedger.Parser.Core do
   defparsec(
     :automated_transaction_parser,
     automated_header
+    |> times(transaction_metadata_line, min: 0)
     |> times(posting, min: 1)
     |> reduce({:build_transaction, []})
   )
@@ -398,6 +415,7 @@ defmodule ExLedger.Parser.Core do
   defparsec(
     :periodic_transaction_parser,
     periodic_header
+    |> times(transaction_metadata_line, min: 0)
     |> times(posting, min: 1)
     |> reduce({:build_transaction, []})
   )
@@ -410,11 +428,6 @@ defmodule ExLedger.Parser.Core do
     |> utf8_string([not: ?:], min: 1)
     |> ignore(string(":"))
     |> reduce({:to_tag, []})
-
-  metadata_key =
-    ascii_char([?A..?Z])
-    |> utf8_string([?a..?z, ?A..?Z, ?0..?9, ?_], min: 0)
-    |> reduce({:join_metadata_key, []})
 
   note_metadata =
     ignore(ascii_string([?;], min: 1))
@@ -632,16 +645,7 @@ defmodule ExLedger.Parser.Core do
     {metadata, tags, comments, actual_date, effective_date} =
       Enum.reduce(notes, {%{}, [], [], nil, nil}, fn
         {:metadata_kv, key, value}, {meta, tags, comments, actual, effective} ->
-          updated_meta =
-            if key == "Attachment" do
-              Map.update(meta, key, [value], fn
-                existing when is_list(existing) -> existing ++ [value]
-                existing -> [existing, value]
-              end)
-            else
-              Map.put(meta, key, value)
-            end
-
+          updated_meta = update_metadata(meta, key, value)
           {updated_meta, tags, comments, actual, effective}
 
         {:tag, tag}, {meta, tags, comments, actual, effective} ->
@@ -674,6 +678,17 @@ defmodule ExLedger.Parser.Core do
         actual_date: actual_date,
         effective_date: effective_date
     }
+  end
+
+  defp update_metadata(meta, key, value) do
+    if key == "Attachment" do
+      Map.update(meta, key, [value], fn
+        existing when is_list(existing) -> existing ++ [value]
+        existing -> [existing, value]
+      end)
+    else
+      Map.put(meta, key, value)
+    end
   end
 
   # Parse posting date syntax from comment: [DATE], [=DATE], [DATE=DATE]
@@ -721,35 +736,51 @@ defmodule ExLedger.Parser.Core do
 
   @spec build_transaction(list()) :: transaction()
   defp build_transaction(parts) do
-    transaction =
-      parts
-      |> Enum.reduce(
-        %{
-          kind: :regular,
-          date: nil,
-          aux_date: nil,
-          state: :uncleared,
-          code: "",
-          payee: nil,
-          comment: nil,
-          predicate: nil,
-          period: nil,
-          postings: []
-        },
+    {transaction, pending_metadata} =
+      Enum.reduce(
+        parts,
+        {%{
+           kind: :regular,
+           date: nil,
+           aux_date: nil,
+           state: :uncleared,
+           code: "",
+           payee: nil,
+           comment: nil,
+           metadata: %{},
+           predicate: nil,
+           period: nil,
+           postings: []
+         }, []},
         fn
-          {:date, date}, acc -> %{acc | date: date}
-          {:aux_date, aux_date}, acc -> %{acc | aux_date: aux_date}
-          {:state, state}, acc -> %{acc | state: state}
-          {:code, code}, acc -> %{acc | code: code}
-          {:payee, payee}, acc -> %{acc | payee: payee}
-          {:comment, comment}, acc -> %{acc | comment: comment}
-          {:predicate, predicate}, acc -> %{acc | predicate: predicate}
-          {:period, period}, acc -> %{acc | period: period}
-          posting, acc when is_map(posting) -> Map.update!(acc, :postings, &[posting | &1])
-          _, acc -> acc
+          {:date, date}, {acc, pending} -> {%{acc | date: date}, pending}
+          {:aux_date, aux_date}, {acc, pending} -> {%{acc | aux_date: aux_date}, pending}
+          {:state, state}, {acc, pending} -> {%{acc | state: state}, pending}
+          {:code, code}, {acc, pending} -> {%{acc | code: code}, pending}
+          {:payee, payee}, {acc, pending} -> {%{acc | payee: payee}, pending}
+          {:comment, comment}, {acc, pending} -> {%{acc | comment: comment}, pending}
+          {:metadata_kv, key, value}, {acc, pending} ->
+            {
+              %{acc | metadata: update_metadata(acc.metadata, key, value)},
+              [{key, value} | pending]
+            }
+
+          {:predicate, predicate}, {acc, pending} -> {%{acc | predicate: predicate}, pending}
+          {:period, period}, {acc, pending} -> {%{acc | period: period}, pending}
+          posting, {acc, pending} when is_map(posting) ->
+            {Map.update!(acc, :postings, &[posting | &1]), pending}
+
+          _, acc ->
+            acc
         end
       )
-      |> Map.update!(:postings, &Enum.reverse/1)
+
+    pending_metadata = Enum.reverse(pending_metadata)
+
+    postings =
+      transaction.postings
+      |> Enum.reverse()
+      |> apply_pending_metadata(pending_metadata)
 
     kind =
       cond do
@@ -758,6 +789,19 @@ defmodule ExLedger.Parser.Core do
         true -> :regular
       end
 
-    %{transaction | kind: kind}
+    %{transaction | kind: kind, postings: postings}
   end
+
+  defp apply_pending_metadata(postings, []), do: postings
+
+  defp apply_pending_metadata([first | rest], pending_metadata) do
+    updated_first =
+      Enum.reduce(pending_metadata, first, fn {key, value}, posting ->
+        %{posting | metadata: update_metadata(posting.metadata, key, value)}
+      end)
+
+    [updated_first | rest]
+  end
+
+  defp apply_pending_metadata([], _pending_metadata), do: []
 end

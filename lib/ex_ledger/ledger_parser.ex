@@ -501,8 +501,17 @@ defmodule ExLedger.LedgerParser do
     |> String.split("\n")
     |> Enum.all?(fn line ->
       trimmed = String.trim(line)
-      trimmed == "" or String.starts_with?(trimmed, ";")
+      trimmed == "" or is_comment_line?(trimmed)
     end)
+  end
+
+  # Comment characters per Ledger manual section 4.7.1: ; # % | *
+  defp is_comment_line?(trimmed) do
+    String.starts_with?(trimmed, ";") or
+      String.starts_with?(trimmed, "#") or
+      String.starts_with?(trimmed, "%") or
+      String.starts_with?(trimmed, "|") or
+      String.starts_with?(trimmed, "*")
   end
 
   defp maybe_add_source_file(transaction, nil), do: transaction
@@ -607,13 +616,20 @@ defmodule ExLedger.LedgerParser do
 
   defp skippable_line?(trimmed, current_lines) do
     current_lines == [] and
-      (String.starts_with?(trimmed, ";") or
+      (is_comment_line?(trimmed) or
+         is_price_directive?(trimmed) or
          String.starts_with?(trimmed, "include ") or
          String.starts_with?(trimmed, "alias ") or
          String.starts_with?(trimmed, "tag ") or
          String.starts_with?(trimmed, "payee ") or
          String.starts_with?(trimmed, "commodity ") or
          old_style_account_declaration?(trimmed))
+  end
+
+  # Price directive: P DATE SYMBOL PRICE
+  defp is_price_directive?(trimmed) do
+    String.starts_with?(trimmed, "P ") and
+      Regex.match?(~r/^P\s+\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}\s+/, trimmed)
   end
 
   defp old_style_account_declaration?(trimmed) do

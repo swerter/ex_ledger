@@ -82,6 +82,8 @@ defmodule ExLedger.Parser.Transaction do
 
   @doc """
   Balances postings by calculating the missing amount.
+
+  Only balances among regular postings - virtual unbalanced postings are excluded.
   """
   @spec balance_postings(Core.transaction()) :: Core.transaction()
   @spec balance_postings([Core.posting()]) :: [Core.posting()]
@@ -91,24 +93,102 @@ defmodule ExLedger.Parser.Transaction do
   end
 
   def balance_postings(postings) when is_list(postings) do
-    nil_count = Enum.count(postings, fn p -> is_nil(p.amount) end)
+    # Separate virtual unbalanced postings from others
+    # Track indices to preserve order
+    indexed_postings = Enum.with_index(postings)
 
-    case nil_count do
-      1 -> balance_single_missing_amount(postings)
-      _ -> postings
-    end
+    {virtual_unbalanced_indices, balanceable_with_indices} =
+      Enum.split_with(indexed_postings, fn {p, _idx} ->
+        Map.get(p, :virtual, false) and not Map.get(p, :must_balance, false)
+      end)
+
+    virtual_unbalanced_set = MapSet.new(Enum.map(virtual_unbalanced_indices, fn {_, idx} -> idx end))
+    balanceable = Enum.map(balanceable_with_indices, fn {p, _} -> p end)
+
+    nil_count = Enum.count(balanceable, fn p -> is_nil(p.amount) end)
+
+    balanced =
+      case nil_count do
+        1 -> balance_single_missing_amount(balanceable)
+        _ -> balanceable
+      end
+
+    # Reconstruct postings in original order using indices
+    {result, _} =
+      Enum.map_reduce(postings, balanced, fn posting, remaining_balanced ->
+        idx = Enum.find_index(postings, fn p -> p == posting end)
+
+        if MapSet.member?(virtual_unbalanced_set, idx) do
+          {posting, remaining_balanced}
+        else
+          # Take the next balanced posting
+          case remaining_balanced do
+            [next | rest] -> {next, rest}
+            [] -> {posting, []}
+          end
+        end
+      end)
+
+    result
   end
 
   @doc """
   Validates that a transaction is balanced (all postings sum to zero).
+
+  Virtual postings are handled specially:
+  - Virtual unbalanced (parentheses): excluded from balance validation
+  - Virtual balanced (brackets): must balance among themselves
+  - Regular postings: must balance among themselves
   """
   @spec validate_transaction(Core.transaction()) ::
           :ok | {:error, :multiple_nil_amounts | :multi_currency_missing_amount | :unbalanced}
-  def validate_transaction(%{postings: postings}) do
+  def validate_transaction(%{postings: postings} = transaction) do
+    kind = Map.get(transaction, :kind, :regular)
+    # Separate virtual and regular postings
+    {virtual_balanced, _virtual_unbalanced, regular} = split_posting_types(postings)
+
+    # For automated/periodic transactions, skip validation if only virtual unbalanced postings
+    skip_validation? =
+      kind in [:automated, :periodic] and
+        regular == [] and virtual_balanced == []
+
+    if skip_validation? do
+      :ok
+    else
+      # Validate regular postings
+      with :ok <- validate_posting_group(regular, kind),
+           # Validate virtual balanced postings (if any)
+           :ok <- validate_posting_group(virtual_balanced, kind) do
+        :ok
+      end
+    end
+  end
+
+  defp split_posting_types(postings) do
+    Enum.reduce(postings, {[], [], []}, fn posting, {vb, vu, r} ->
+      virtual? = Map.get(posting, :virtual, false)
+      must_balance? = Map.get(posting, :must_balance, false)
+
+      cond do
+        virtual? and must_balance? -> {[posting | vb], vu, r}
+        virtual? and not must_balance? -> {vb, [posting | vu], r}
+        true -> {vb, vu, [posting | r]}
+      end
+    end)
+  end
+
+  defp validate_posting_group([], _kind), do: :ok
+
+  defp validate_posting_group(postings, kind) do
     nil_count = Enum.count(postings, fn p -> is_nil(p.amount) end)
+    non_virtual_count = Enum.count(postings, fn p -> not Map.get(p, :virtual, false) end)
 
     cond do
-      nil_count > 1 ->
+      # For automated/periodic, allow single posting without amount
+      kind in [:automated, :periodic] and length(postings) == 1 ->
+        :ok
+
+      nil_count > 1 and non_virtual_count > 1 ->
         {:error, :multiple_nil_amounts}
 
       nil_count == 1 ->
@@ -251,13 +331,19 @@ defmodule ExLedger.Parser.Transaction do
   defp line_missing_double_space?(line) do
     trimmed = line |> String.split(";", parts: 2) |> List.first()
 
-    case Regex.scan(@amount_regex, trimmed, return: :index) do
+    # Remove cost syntax (@ or @@) and anything after it before checking spacing
+    # Cost syntax: "10 AAPL @ $150.00" or "10 AAPL @@ $1500.00"
+    line_without_cost =
+      trimmed
+      |> String.replace(~r/\s+@@?\s+.+$/, "")
+
+    case Regex.scan(@amount_regex, line_without_cost, return: :index) do
       [] ->
         false
 
       matches ->
         [{start, len}] = List.last(matches)
-        amount_str = String.slice(trimmed, start, len)
+        amount_str = String.slice(line_without_cost, start, len)
 
         actual_start =
           case Regex.run(~r/^\s+/, amount_str) do
@@ -265,7 +351,7 @@ defmodule ExLedger.Parser.Transaction do
             nil -> start
           end
 
-        prefix = String.slice(trimmed, 0, actual_start)
+        prefix = String.slice(line_without_cost, 0, actual_start)
 
         adjusted_prefix =
           case Regex.run(~r/([A-Z]{1,5})\s+[-+]?\s*$/, prefix) do
@@ -312,18 +398,51 @@ defmodule ExLedger.Parser.Transaction do
   end
 
   defp apply_missing_amount(postings) do
+    # Calculate total using effective values (considering cost)
     total =
       postings
       |> Enum.filter(fn p -> !is_nil(p.amount) end)
-      |> Enum.map(fn p -> p.amount.value end)
+      |> Enum.map(&posting_effective_value/1)
       |> Enum.sum()
 
-    {currency, currency_position} =
-      postings
-      |> Enum.find(fn p -> !is_nil(p.amount) end)
-      |> then(fn p -> {p.amount.currency, Map.get(p.amount, :currency_position)} end)
+    # Find the cost currency if any posting has a cost
+    {currency, currency_position} = find_balance_currency(postings)
 
     Enum.map(postings, &fill_missing_amount(&1, total, currency, currency_position))
+  end
+
+  # Calculate the effective value of a posting for balance purposes
+  # If posting has cost, use the cost value; otherwise use the amount
+  defp posting_effective_value(%{amount: amount} = posting) do
+    cost = Map.get(posting, :cost)
+
+    if not is_nil(cost) do
+      case cost.type do
+        :per_unit -> amount.value * cost.amount.value
+        :total -> cost.amount.value
+      end
+    else
+      amount.value
+    end
+  end
+
+  # Find the currency to use for balancing
+  # If any posting has a cost, use the cost currency
+  defp find_balance_currency(postings) do
+    posting_with_cost = Enum.find(postings, fn p -> not is_nil(Map.get(p, :cost)) end)
+
+    if posting_with_cost do
+      cost = posting_with_cost.cost
+      {cost.amount.currency, Map.get(cost.amount, :currency_position)}
+    else
+      posting = Enum.find(postings, fn p -> not is_nil(p.amount) end)
+
+      if posting do
+        {posting.amount.currency, Map.get(posting.amount, :currency_position)}
+      else
+        {nil, nil}
+      end
+    end
   end
 
   @spec fill_missing_amount(Core.posting(), float(), String.t() | nil, :leading | :trailing | nil) ::
@@ -366,8 +485,26 @@ defmodule ExLedger.Parser.Transaction do
   end
 
   defp sum_postings_by_currency(postings) do
-    Enum.reduce(postings, %{}, fn %{amount: %{value: value, currency: currency}}, acc ->
+    Enum.reduce(postings, %{}, fn posting, acc ->
+      {currency, value} = posting_balance_contribution(posting)
       Map.update(acc, currency, value, &(&1 + value))
     end)
+  end
+
+  # Get the currency and value a posting contributes for balance calculation
+  defp posting_balance_contribution(%{amount: amount} = posting) do
+    cost = Map.get(posting, :cost)
+
+    if not is_nil(cost) do
+      effective_value =
+        case cost.type do
+          :per_unit -> amount.value * cost.amount.value
+          :total -> cost.amount.value
+        end
+
+      {cost.amount.currency, effective_value}
+    else
+      {amount.currency, amount.value}
+    end
   end
 end

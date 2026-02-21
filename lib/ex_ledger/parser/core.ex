@@ -18,7 +18,17 @@ defmodule ExLedger.Parser.Core do
           amount: amount() | nil,
           metadata: %{String.t() => String.t()},
           tags: [String.t()],
-          comments: [String.t()]
+          comments: [String.t()],
+          virtual: boolean(),
+          must_balance: boolean(),
+          cost: cost() | nil,
+          actual_date: Date.t() | nil,
+          effective_date: Date.t() | nil
+        }
+
+  @type cost :: %{
+          type: :per_unit | :total,
+          amount: amount()
         }
 
   @type transaction :: %{
@@ -259,12 +269,39 @@ defmodule ExLedger.Parser.Core do
 
   defparsec(:amount_parser, amount_value)
 
-  # Account name
-  account_name =
-    utf8_string([not: ?\n, not: ?\s], min: 1)
-    |> repeat(ascii_char([?\s]) |> utf8_string([not: ?\n, not: ?\s], min: 1))
+  # Account name - can be regular, virtual (parentheses), or virtual balanced (brackets)
+  # Regular account: Assets:Cash
+  # Virtual unbalanced: (Budget:Food)
+  # Virtual balanced: [Tracking:Receipts]
+  regular_account_name =
+    utf8_string([not: ?\n, not: ?\s, not: ?(, not: ?), not: ?[, not: ?]], min: 1)
+    |> repeat(ascii_char([?\s]) |> utf8_string([not: ?\n, not: ?\s, not: ?(, not: ?), not: ?[, not: ?]], min: 1))
     |> reduce({:join_account_parts, []})
-    |> unwrap_and_tag(:account)
+
+  virtual_unbalanced_account =
+    ignore(string("("))
+    |> concat(
+      utf8_string([not: ?\n, not: ?)], min: 1)
+      |> reduce({:trim_string, []})
+    )
+    |> ignore(string(")"))
+    |> post_traverse({:tag_virtual_unbalanced, []})
+
+  virtual_balanced_account =
+    ignore(string("["))
+    |> concat(
+      utf8_string([not: ?\n, not: ?]], min: 1)
+      |> reduce({:trim_string, []})
+    )
+    |> ignore(string("]"))
+    |> post_traverse({:tag_virtual_balanced, []})
+
+  account_name =
+    choice([
+      virtual_unbalanced_account,
+      virtual_balanced_account,
+      regular_account_name |> unwrap_and_tag(:account)
+    ])
 
   # Indentation
   indentation =
@@ -281,12 +318,31 @@ defmodule ExLedger.Parser.Core do
     |> utf8_string([not: ?\n], min: 0)
     |> optional()
 
+  # Cost/price: @ AMOUNT (per-unit) or @@ AMOUNT (total)
+  per_unit_cost =
+    ignore(whitespace)
+    |> ignore(string("@"))
+    |> lookahead_not(string("@"))
+    |> ignore(whitespace)
+    |> concat(amount_value)
+    |> post_traverse({:tag_cost, [:per_unit]})
+
+  total_cost =
+    ignore(whitespace)
+    |> ignore(string("@@"))
+    |> ignore(whitespace)
+    |> concat(amount_value)
+    |> post_traverse({:tag_cost, [:total]})
+
+  cost_spec = choice([total_cost, per_unit_cost])
+
   posting_with_optional_amount =
     ignore(indentation)
     |> concat(account_name)
     |> optional(
       ignore(ascii_string([?\s, ?\t], min: 2))
       |> concat(amount_value |> unwrap_and_tag(:amount))
+      |> optional(cost_spec)
     )
     |> ignore(inline_comment)
     |> ignore(optional_whitespace)
@@ -433,6 +489,19 @@ defmodule ExLedger.Parser.Core do
     {rest, acc ++ [{:currency_position, position}], context}
   end
 
+  defp tag_virtual_unbalanced(rest, [account], context, _line, _offset) do
+    {rest, [{:account, account}, {:virtual, true}, {:must_balance, false}], context}
+  end
+
+  defp tag_virtual_balanced(rest, [account], context, _line, _offset) do
+    {rest, [{:account, account}, {:virtual, true}, {:must_balance, true}], context}
+  end
+
+  defp tag_cost(rest, [amount_map], context, _line, _offset, type) do
+    cost = %{type: type, amount: amount_map}
+    {rest, [{:cost, cost}], context}
+  end
+
   @spec to_amount(keyword()) :: amount()
   defp to_amount(parts) do
     has_negative = Enum.member?(parts, :negative)
@@ -489,19 +558,40 @@ defmodule ExLedger.Parser.Core do
   end
 
   @spec to_posting(keyword()) :: posting()
-  defp to_posting([{:account, account}]) do
-    %{account: account, amount: nil, metadata: %{}, tags: [], comments: []}
-  end
+  defp to_posting(parts) do
+    account = Keyword.get(parts, :account)
+    amount = Keyword.get(parts, :amount)
+    virtual = Keyword.get(parts, :virtual, false)
+    must_balance = Keyword.get(parts, :must_balance, false)
+    cost = Keyword.get(parts, :cost)
 
-  defp to_posting([{:account, account}, {:amount, amount}]) do
-    %{account: account, amount: amount, metadata: %{}, tags: [], comments: []}
+    %{
+      account: account,
+      amount: amount,
+      metadata: %{},
+      tags: [],
+      comments: [],
+      virtual: virtual,
+      must_balance: must_balance,
+      cost: cost,
+      actual_date: nil,
+      effective_date: nil
+    }
   end
 
   @spec to_posting_simple(keyword()) :: map()
   defp to_posting_simple(parts) do
     account = Keyword.get(parts, :account)
     amount = Keyword.get(parts, :amount)
-    %{account: account, amount: amount}
+    virtual = Keyword.get(parts, :virtual, false)
+    must_balance = Keyword.get(parts, :must_balance, false)
+
+    %{
+      account: account,
+      amount: amount,
+      virtual: virtual,
+      must_balance: must_balance
+    }
   end
 
   @spec to_metadata([String.t()]) :: {:metadata_kv, String.t(), String.t()}
@@ -539,16 +629,25 @@ defmodule ExLedger.Parser.Core do
         _ -> true
       end)
 
-    {metadata, tags, comments} =
-      Enum.reduce(notes, {%{}, [], []}, fn
-        {:metadata_kv, key, value}, {meta, tags, comments} ->
-          {Map.put(meta, key, value), tags, comments}
+    {metadata, tags, comments, actual_date, effective_date} =
+      Enum.reduce(notes, {%{}, [], [], nil, nil}, fn
+        {:metadata_kv, key, value}, {meta, tags, comments, actual, effective} ->
+          {Map.put(meta, key, value), tags, comments, actual, effective}
 
-        {:tag, tag}, {meta, tags, comments} ->
-          {meta, [tag | tags], comments}
+        {:tag, tag}, {meta, tags, comments, actual, effective} ->
+          {meta, [tag | tags], comments, actual, effective}
 
-        {:note_comment, comment}, {meta, tags, comments} ->
-          {meta, tags, [comment | comments]}
+        {:note_comment, comment}, {meta, tags, comments, actual, effective} ->
+          # Check if comment contains date syntax: [DATE], [=DATE], [DATE=DATE]
+          case parse_posting_dates(comment) do
+            {:ok, new_actual, new_effective} ->
+              actual = new_actual || actual
+              effective = new_effective || effective
+              {meta, tags, [comment | comments], actual, effective}
+
+            :none ->
+              {meta, tags, [comment | comments], actual, effective}
+          end
 
         _, acc ->
           acc
@@ -557,7 +656,57 @@ defmodule ExLedger.Parser.Core do
     tags = Enum.reverse(tags)
     comments = Enum.reverse(comments)
 
-    %{posting | metadata: metadata, tags: tags, comments: comments}
+    %{
+      posting
+      | metadata: metadata,
+        tags: tags,
+        comments: comments,
+        actual_date: actual_date,
+        effective_date: effective_date
+    }
+  end
+
+  # Parse posting date syntax from comment: [DATE], [=DATE], [DATE=DATE]
+  defp parse_posting_dates(comment) do
+    date_regex = ~r/\[(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})?(?:=(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}))?\]/
+
+    case Regex.run(date_regex, comment) do
+      [_, actual_str, effective_str] when actual_str != "" and effective_str != "" ->
+        actual_date = parse_date_string(actual_str)
+        effective_date = parse_date_string(effective_str)
+        {:ok, actual_date, effective_date}
+
+      [_, actual_str] when actual_str != "" ->
+        actual_date = parse_date_string(actual_str)
+        {:ok, actual_date, nil}
+
+      [_, "", effective_str] when effective_str != "" ->
+        effective_date = parse_date_string(effective_str)
+        {:ok, nil, effective_date}
+
+      _ ->
+        :none
+    end
+  end
+
+  defp parse_date_string(str) do
+    # Parse YYYY/MM/DD or YYYY-MM-DD
+    parts =
+      str
+      |> String.replace("-", "/")
+      |> String.split("/")
+      |> Enum.map(&String.to_integer/1)
+
+    case parts do
+      [year, month, day] ->
+        case Date.new(year, month, day) do
+          {:ok, date} -> date
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
   end
 
   @spec build_transaction(list()) :: transaction()

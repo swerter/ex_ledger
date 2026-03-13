@@ -2548,15 +2548,126 @@ defmodule ExLedger.LedgerParserTest do
       assert accounts["food"] == "Expenses:Food"
       assert accounts["cash"] == "Assets:Cash"
 
-      # Verify alias resolution in transactions
-      resolved = LedgerParser.resolve_transaction_aliases(transactions, accounts)
-      [transaction] = resolved
+      # Verify alias resolution happens automatically during parsing
+      [transaction] = transactions
 
       posting_accounts = Enum.map(transaction.postings, & &1.account)
       assert "Expenses:Food" in posting_accounts
       assert "Assets:Cash" in posting_accounts
       refute "food" in posting_accounts
       refute "cash" in posting_accounts
+    end
+
+    test "aliases are automatically expanded during parse_ledger" do
+      input = """
+      account Assets:Bank:Checking  ; type:asset
+              alias checking
+              alias bank
+
+      2024/01/15 Deposit
+          checking                $1000.00
+          Income:Salary
+
+      2024/01/16 Withdrawal
+          Expenses:Food           $50.00
+          bank
+      """
+
+      {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input, base_dir: ".")
+
+      # Both transactions should have aliases resolved automatically
+      [txn1, txn2] = transactions
+
+      # First transaction: "checking" -> "Assets:Bank:Checking"
+      assert Enum.any?(txn1.postings, &(&1.account == "Assets:Bank:Checking"))
+      refute Enum.any?(txn1.postings, &(&1.account == "checking"))
+
+      # Second transaction: "bank" -> "Assets:Bank:Checking"
+      assert Enum.any?(txn2.postings, &(&1.account == "Assets:Bank:Checking"))
+      refute Enum.any?(txn2.postings, &(&1.account == "bank"))
+    end
+
+    test "alias chain expansion during parsing" do
+      input = """
+      account Assets:Checking
+              alias checking
+      alias bank = checking
+
+      2024/01/15 Deposit
+          bank                    $500.00
+          Income:Salary
+      """
+
+      {:ok, transactions, accounts} = LedgerParser.parse_ledger(input, base_dir: ".")
+
+      # Verify canonical account has correct type
+      assert accounts["Assets:Checking"] == :asset
+
+      # Verify alias chain in accounts map
+      assert accounts["checking"] == "Assets:Checking"
+      assert accounts["bank"] == "Assets:Checking"
+
+      # Verify "bank" resolves to canonical account in transaction
+      [transaction] = transactions
+      posting_accounts = Enum.map(transaction.postings, & &1.account)
+      assert "Assets:Checking" in posting_accounts
+      refute "bank" in posting_accounts
+      refute "checking" in posting_accounts
+    end
+
+    test "multi-currency transaction with aliases" do
+      input = """
+      account Assets:Wise:USD  ; type:asset
+              alias wise_usd
+      account Assets:Wise:CHF  ; type:asset
+              alias wise_chf
+
+      2024/01/15 Currency Exchange
+          wise_usd                $100.00
+          wise_chf                CHF -90.00
+      """
+
+      {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input, base_dir: ".")
+
+      [transaction] = transactions
+      posting_accounts = Enum.map(transaction.postings, & &1.account)
+
+      assert "Assets:Wise:USD" in posting_accounts
+      assert "Assets:Wise:CHF" in posting_accounts
+      refute "wise_usd" in posting_accounts
+      refute "wise_chf" in posting_accounts
+    end
+
+    test "balance calculation with alias-expanded transactions" do
+      input = """
+      account Assets:Cash  ; type:asset
+              alias cash
+      account Expenses:Food  ; type:expense
+              alias food
+
+      2024/01/15 Grocery Store
+          food                    $50.00
+          cash
+
+      2024/01/16 Restaurant
+          food                    $30.00
+          cash
+      """
+
+      {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input, base_dir: ".")
+      balances = ExLedger.balance(transactions)
+
+      # Balances should use canonical account names
+      assert Map.has_key?(balances, "Expenses:Food")
+      assert Map.has_key?(balances, "Assets:Cash")
+      refute Map.has_key?(balances, "food")
+      refute Map.has_key?(balances, "cash")
+
+      # Verify amounts are combined correctly
+      [%{amount: food_balance, currency: "$"}] = balances["Expenses:Food"]
+      [%{amount: cash_balance, currency: "$"}] = balances["Assets:Cash"]
+      assert food_balance == 80.0
+      assert cash_balance == -80.0
     end
   end
 

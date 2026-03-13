@@ -53,6 +53,10 @@ defmodule ExLedger.Parser.Accounts do
 
   @doc """
   Resolves all account names in transactions from aliases to canonical names.
+
+  Note: This function is now called automatically by `ExLedger.LedgerParser.parse_ledger/2`,
+  so you typically don't need to call it manually. It remains public for cases where you
+  need to re-resolve aliases or are working with transactions from other sources.
   """
   @spec resolve_transaction_aliases([Core.transaction()], %{String.t() => atom() | String.t()}) ::
           [Core.transaction()]

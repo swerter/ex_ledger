@@ -162,7 +162,9 @@ defmodule ExLedger.LedgerParser do
 
     case expand_and_parse_with_includes(input, context, []) do
       {:ok, transactions, final_accounts, _ctx} ->
-        {:ok, transactions, final_accounts}
+        # Resolve aliases in transactions so account names are canonical
+        resolved_transactions = Accounts.resolve_transaction_aliases(transactions, final_accounts)
+        {:ok, resolved_transactions, final_accounts}
 
       {:error, _} = error ->
         error

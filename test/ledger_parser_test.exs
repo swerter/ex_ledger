@@ -2504,6 +2504,60 @@ defmodule ExLedger.LedgerParserTest do
       assert accounts["checking"] == "Assets:Checking"
       assert accounts["bank"] == "Assets:Checking"
     end
+
+    test "parses account with type comment AND aliases in block" do
+      input = """
+      account Expenses:Food  ; type:expense
+              alias food
+              alias groceries
+      account Assets:Cash  ; type:asset
+              alias cash
+      """
+
+      accounts = LedgerParser.extract_account_declarations(input)
+
+      # Account types should be correctly parsed from type comment
+      assert accounts["Expenses:Food"] == :expense
+      assert accounts["Assets:Cash"] == :asset
+
+      # Aliases should also be parsed from the block
+      assert accounts["food"] == "Expenses:Food"
+      assert accounts["groceries"] == "Expenses:Food"
+      assert accounts["cash"] == "Assets:Cash"
+    end
+
+    test "aliases in transactions resolve correctly when account has type comment" do
+      input = """
+      account Expenses:Food  ; type:expense
+              alias food
+      account Assets:Cash  ; type:asset
+              alias cash
+
+      2024/01/15 Grocery Store
+          food                    $50.00
+          cash
+      """
+
+      {:ok, transactions, accounts} = LedgerParser.parse_ledger(input, base_dir: ".")
+
+      # Verify account types
+      assert accounts["Expenses:Food"] == :expense
+      assert accounts["Assets:Cash"] == :asset
+
+      # Verify aliases exist
+      assert accounts["food"] == "Expenses:Food"
+      assert accounts["cash"] == "Assets:Cash"
+
+      # Verify alias resolution in transactions
+      resolved = LedgerParser.resolve_transaction_aliases(transactions, accounts)
+      [transaction] = resolved
+
+      posting_accounts = Enum.map(transaction.postings, & &1.account)
+      assert "Expenses:Food" in posting_accounts
+      assert "Assets:Cash" in posting_accounts
+      refute "food" in posting_accounts
+      refute "cash" in posting_accounts
+    end
   end
 
   describe "format_balance/2 - zero balance filtering" do

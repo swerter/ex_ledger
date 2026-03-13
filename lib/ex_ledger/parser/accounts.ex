@@ -80,21 +80,14 @@ defmodule ExLedger.Parser.Accounts do
       String.starts_with?(trimmed, "alias ") ->
         parse_account_blocks(rest, maybe_prepend_account(acc, standalone_alias_entry(trimmed)))
 
-      old_account_format_line?(trimmed, line) ->
-        parse_account_blocks(rest, maybe_prepend_account(acc, old_account_entry(line)))
-
       String.starts_with?(trimmed, "account ") ->
         {account_lines, remaining} = collect_account_block([line | rest])
         account = parse_account_block(account_lines)
-        parse_account_blocks(remaining, [account | acc])
+        parse_account_blocks(remaining, maybe_prepend_account(acc, account))
 
       true ->
         parse_account_blocks(rest, acc)
     end
-  end
-
-  defp old_account_format_line?(trimmed, line) do
-    String.starts_with?(trimmed, "account ") and String.contains?(line, ";")
   end
 
   defp standalone_alias_entry(trimmed) do
@@ -110,13 +103,6 @@ defmodule ExLedger.Parser.Accounts do
 
       {:error, _} ->
         nil
-    end
-  end
-
-  defp old_account_entry(line) do
-    case parse_account_declaration(line) do
-      {:ok, account} -> Map.merge(account, %{aliases: [], assertions: []})
-      {:error, _} -> nil
     end
   end
 
@@ -153,21 +139,45 @@ defmodule ExLedger.Parser.Accounts do
     {[first_line | block_lines], remaining}
   end
 
-  @spec parse_account_block([String.t()]) :: map()
+  @spec parse_account_block([String.t()]) :: map() | nil
   defp parse_account_block([first_line | rest]) do
-    account_name =
-      first_line
-      |> String.trim_leading("account")
-      |> String.trim()
+    case parse_account_first_line(first_line) do
+      {:ok, account_name, account_type} ->
+        {aliases, assertions} = Enum.reduce(rest, {[], []}, &parse_account_block_line/2)
 
-    {aliases, assertions} = Enum.reduce(rest, {[], []}, &parse_account_block_line/2)
+        %{
+          name: account_name,
+          type: account_type,
+          aliases: Enum.reverse(aliases),
+          assertions: Enum.reverse(assertions)
+        }
 
-    %{
-      name: account_name,
-      type: :asset,
-      aliases: Enum.reverse(aliases),
-      assertions: Enum.reverse(assertions)
-    }
+      :error ->
+        # Invalid account declaration (e.g., invalid type) - skip
+        nil
+    end
+  end
+
+  defp parse_account_first_line(line) do
+    has_type_comment = String.contains?(line, ";")
+
+    case parse_account_declaration(line) do
+      {:ok, %{name: name, type: type}} ->
+        {:ok, name, type}
+
+      {:error, _} when has_type_comment ->
+        # Line has type comment but parsing failed (invalid type) - skip account
+        :error
+
+      {:error, _} ->
+        # No type comment - parse name and default to :asset
+        account_name =
+          line
+          |> String.trim_leading("account")
+          |> String.trim()
+
+        {:ok, account_name, :asset}
+    end
   end
 
   defp parse_account_block_line(line, {aliases, assertions}) do

@@ -38,13 +38,14 @@ defmodule ExLedger.BalanceMultiCurrencyTest do
   describe "balance() function bug with multi-currency accounts" do
     @tag :failing
     test "currency conversion transaction - simple case" do
+      # Currency conversions must use cost syntax to balance properly
       input = """
       2024/01/01 Initial USD transaction
         Assets:Paypal:USD    USD 100.00
         Income:Sales:USD     USD -100.00
 
-      2024/12/31 Paypal USD Conversion @ 0.90
-        Assets:Paypal:USD    USD -100.00
+      2024/12/31 Paypal USD Conversion
+        Assets:Paypal:USD    -100.00 USD @ 0.90 CHF
         Assets:Paypal:USD    CHF 90.00
       """
 
@@ -82,13 +83,14 @@ defmodule ExLedger.BalanceMultiCurrencyTest do
 
     @tag :failing
     test "balance report output matches ledger CLI" do
+      # Currency conversions must use cost syntax to balance properly
       input = """
       2024/01/01 Paypal payment
         Assets:Paypal:USD    USD 100.00
         Income:Sales:USD     USD -100.00
 
-      2024/12/31 Paypal USD Conversion @ 0.90
-        Assets:Paypal:USD    USD -100.00
+      2024/12/31 Paypal USD Conversion
+        Assets:Paypal:USD    -100.00 USD @ 0.90 CHF
         Assets:Paypal:USD    CHF 90.00
       """
 
@@ -132,17 +134,18 @@ defmodule ExLedger.BalanceMultiCurrencyTest do
     @tag :failing
     test "complete currency conversion should balance to zero in CHF" do
       # This simulates a complete year-end conversion where all USD is converted to CHF
+      # Currency conversions must use cost syntax to balance properly
       input = """
       2024/01/01 Revenue in USD
         Assets:Paypal:USD    USD 100.00
         Income:Sales:USD     USD -100.00
 
-      2024/12/31 Convert asset USD to CHF @ 0.90
-        Assets:Paypal:USD    USD -100.00
+      2024/12/31 Convert asset USD to CHF
+        Assets:Paypal:USD    -100.00 USD @ 0.90 CHF
         Assets:Paypal:USD    CHF 90.00
 
-      2024/12/31 Convert income USD to CHF @ 0.90
-        Income:Sales:USD     USD 100.00
+      2024/12/31 Convert income USD to CHF
+        Income:Sales:USD     100.00 USD @ 0.90 CHF
         Income:Sales:USD     CHF -90.00
       """
 

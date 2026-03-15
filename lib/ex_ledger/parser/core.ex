@@ -276,7 +276,10 @@ defmodule ExLedger.Parser.Core do
   # Virtual balanced: [Tracking:Receipts]
   regular_account_name =
     utf8_string([not: ?\n, not: ?\s, not: ?(, not: ?), not: ?[, not: ?]], min: 1)
-    |> repeat(ascii_char([?\s]) |> utf8_string([not: ?\n, not: ?\s, not: ?(, not: ?), not: ?[, not: ?]], min: 1))
+    |> repeat(
+      ascii_char([?\s])
+      |> utf8_string([not: ?\n, not: ?\s, not: ?(, not: ?), not: ?[, not: ?]], min: 1)
+    )
     |> reduce({:join_account_parts, []})
 
   virtual_unbalanced_account =
@@ -753,20 +756,36 @@ defmodule ExLedger.Parser.Core do
            postings: []
          }, []},
         fn
-          {:date, date}, {acc, pending} -> {%{acc | date: date}, pending}
-          {:aux_date, aux_date}, {acc, pending} -> {%{acc | aux_date: aux_date}, pending}
-          {:state, state}, {acc, pending} -> {%{acc | state: state}, pending}
-          {:code, code}, {acc, pending} -> {%{acc | code: code}, pending}
-          {:payee, payee}, {acc, pending} -> {%{acc | payee: payee}, pending}
-          {:comment, comment}, {acc, pending} -> {%{acc | comment: comment}, pending}
+          {:date, date}, {acc, pending} ->
+            {%{acc | date: date}, pending}
+
+          {:aux_date, aux_date}, {acc, pending} ->
+            {%{acc | aux_date: aux_date}, pending}
+
+          {:state, state}, {acc, pending} ->
+            {%{acc | state: state}, pending}
+
+          {:code, code}, {acc, pending} ->
+            {%{acc | code: code}, pending}
+
+          {:payee, payee}, {acc, pending} ->
+            {%{acc | payee: payee}, pending}
+
+          {:comment, comment}, {acc, pending} ->
+            {%{acc | comment: comment}, pending}
+
           {:metadata_kv, key, value}, {acc, pending} ->
             {
               %{acc | metadata: update_metadata(acc.metadata, key, value)},
               [{key, value} | pending]
             }
 
-          {:predicate, predicate}, {acc, pending} -> {%{acc | predicate: predicate}, pending}
-          {:period, period}, {acc, pending} -> {%{acc | period: period}, pending}
+          {:predicate, predicate}, {acc, pending} ->
+            {%{acc | predicate: predicate}, pending}
+
+          {:period, period}, {acc, pending} ->
+            {%{acc | period: period}, pending}
+
           posting, {acc, pending} when is_map(posting) ->
             {Map.update!(acc, :postings, &[posting | &1]), pending}
 

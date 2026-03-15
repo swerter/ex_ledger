@@ -102,7 +102,9 @@ defmodule ExLedger.Parser.Transaction do
         Map.get(p, :virtual, false) and not Map.get(p, :must_balance, false)
       end)
 
-    virtual_unbalanced_set = MapSet.new(Enum.map(virtual_unbalanced_indices, fn {_, idx} -> idx end))
+    virtual_unbalanced_set =
+      MapSet.new(Enum.map(virtual_unbalanced_indices, fn {_, idx} -> idx end))
+
     balanceable = Enum.map(balanceable_with_indices, fn {p, _} -> p end)
 
     nil_count = Enum.count(balanceable, fn p -> is_nil(p.amount) end)
@@ -476,12 +478,10 @@ defmodule ExLedger.Parser.Transaction do
     end
   end
 
-  defp validate_multi_currency(currency_totals) do
-    if map_size(currency_totals) > 1 do
-      :ok
-    else
-      {:error, :unbalanced}
-    end
+  defp validate_multi_currency(_currency_totals) do
+    # Like ledger-cli, require ALL currencies to independently balance.
+    # If we reach here, at least one currency doesn't balance.
+    {:error, :unbalanced}
   end
 
   defp sum_postings_by_currency(postings) do

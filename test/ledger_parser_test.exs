@@ -156,34 +156,32 @@ defmodule ExLedger.LedgerParserTest do
 
     test "handles account names with numbers correctly" do
       # Account names containing numbers should not be confused with amounts
+      # Each currency must balance independently
       input = """
       2009/11/01 Account Transfer
-          1 Aktiven:10 Umlaufvermögen:1022 Wise  USD -234.70
-          6 Sonstiger Aufwand:6570 Informatik:Server  CHF 214.13
+          1 Aktiven:10 Umlaufvermögen:1022 Wise  CHF -234.70
+          6 Sonstiger Aufwand:6570 Informatik:Server  CHF 234.70
       """
 
-      # Multi-currency transaction - allowed even though currencies don't balance
-      # (exchange rate conversion is handled outside the parser)
       transaction = parse_transaction!(input)
       assert length(transaction.postings) == 2
     end
 
     test "handles very long account names with proper spacing" do
       # Long account name similar to real-world ledger files
+      # Each currency must balance independently
       input = """
       2009/11/01 Test Transaction
           6 Other expenses:6570 Computer:Development:Webapp                           CHF 225.96
-          1 Assets:10 Turnover:1022 Wise                                            USD -246.47
+          1 Assets:10 Turnover:1022 Wise                                            CHF -225.96
       """
 
-      # Multi-currency transaction - allowed even though currencies don't balance
-      # (exchange rate conversion is handled outside the parser)
       transaction = parse_transaction!(input)
       [posting1, posting2] = transaction.postings
       assert posting1.account == "6 Other expenses:6570 Computer:Development:Webapp"
       assert posting1.amount == %{value: 225.96, currency: "CHF", currency_position: :leading}
       assert posting2.account == "1 Assets:10 Turnover:1022 Wise"
-      assert posting2.amount == %{value: -246.47, currency: "USD", currency_position: :leading}
+      assert posting2.amount == %{value: -225.96, currency: "CHF", currency_position: :leading}
     end
 
     test "rejects insufficient spacing with long account name" do
@@ -527,11 +525,25 @@ defmodule ExLedger.LedgerParserTest do
     end
 
     test "parses transaction at sign in description" do
+      # Multi-currency transaction without cost syntax is now rejected
+      # as each currency must balance independently
       input = """
       2025/01/10 LUFTHANSA-GRO 131.91 EUR @0.91677
         ; todo: file missing
         5 Personal:58 Other:5880 Other Personal expenses  CHF 60.18
         1 Assets:10 Turnover:1022 Abb                          USD -136.30
+      """
+
+      assert {:error, :unbalanced} = LedgerParser.parse_transaction(input)
+    end
+
+    test "parses transaction at sign in description with balanced currencies" do
+      # Same test but with balanced currencies
+      input = """
+      2025/01/10 LUFTHANSA-GRO 131.91 EUR @0.91677
+        ; todo: file missing
+        5 Personal:58 Other:5880 Other Personal expenses  CHF 60.18
+        1 Assets:10 Turnover:1022 Abb                          CHF -60.18
       """
 
       transaction = parse_transaction!(input)
@@ -547,31 +559,16 @@ defmodule ExLedger.LedgerParserTest do
       assert posting1.amount == %{value: 60.18, currency: "CHF", currency_position: :leading}
 
       assert posting2.account == "1 Assets:10 Turnover:1022 Abb"
-      # Should be automatically calculated as negative of first posting
-      assert posting2.amount == %{value: -136.30, currency: "USD", currency_position: :leading}
-
-      balance_should_txt = """
-               USD -136.30  1 Assets:10 Turnover:1022 Abb
-                 CHF 60.18  5 Personal:58 Other:5880 Other Personal expenses
-      --------------------
-                 CHF 60.18
-               USD -136.30
-      """
-
-      balance_txt =
-        transaction
-        |> ExLedger.LedgerParser.balance()
-        |> ExLedger.LedgerParser.format_balance()
-
-      assert balance_txt == balance_should_txt
+      assert posting2.amount == %{value: -60.18, currency: "CHF", currency_position: :leading}
     end
 
     test "parses transaction with single-digit decimal amounts" do
+      # Use balanced single currency to test decimal parsing
       input = """
       2024/07/21 Paypal payment from Tilted Windmill Press
         1 Assets:Receivables:Paypal:USD    USD -75.0
         6 Expenses:Bank:Fees    USD 8.4
-        5 Expenses:Training   CHF 66.6
+        5 Expenses:Other   USD 66.6
       """
 
       transaction = parse_transaction!(input)
@@ -588,8 +585,8 @@ defmodule ExLedger.LedgerParserTest do
       assert posting2.account == "6 Expenses:Bank:Fees"
       assert posting2.amount == %{value: 8.4, currency: "USD", currency_position: :leading}
 
-      assert posting3.account == "5 Expenses:Training"
-      assert posting3.amount == %{value: 66.6, currency: "CHF", currency_position: :leading}
+      assert posting3.account == "5 Expenses:Other"
+      assert posting3.amount == %{value: 66.6, currency: "USD", currency_position: :leading}
     end
   end
 
@@ -1059,6 +1056,7 @@ defmodule ExLedger.LedgerParserTest do
 
       assert is_list(attachments)
       assert length(attachments) == 2
+
       assert attachments == [
                "receipts/2025-01-05_Swiss_Post.pdf",
                "receipts/2025-01-12_AWS.pdf"
@@ -1082,6 +1080,7 @@ defmodule ExLedger.LedgerParserTest do
              ]
 
       [first_posting | _rest] = transaction.postings
+
       assert first_posting.metadata["Attachment"] == [
                "receipts/2025-01-05_Swiss_Post.pdf",
                "receipts/2025-01-12_AWS.pdf"
@@ -1323,8 +1322,9 @@ defmodule ExLedger.LedgerParserTest do
       assert :ok = LedgerParser.validate_transaction(transaction)
     end
 
-    test "allows multi-currency transaction (cannot validate exchange rates)" do
-      # Multi-currency transactions are allowed because we cannot validate exchange rates
+    test "rejects multi-currency transaction where currencies do not balance" do
+      # Multi-currency transactions now require each currency to balance independently
+      # (like ledger-cli does)
       input = """
       2024/07/21 Paypal payment
         Assets:Receivables:Paypal    USD -75.0
@@ -1332,26 +1332,25 @@ defmodule ExLedger.LedgerParserTest do
         Expenses:Training   CHF 66.61
       """
 
-      # Multi-currency transaction - allowed even though per-currency totals don't balance
-      # We cannot validate this without knowing the exchange rate
+      # USD: -75 + 1 = -74 (not balanced)
+      # CHF: 66.61 (not balanced)
       result = LedgerParser.parse_transaction(input)
 
       case result do
         {:ok, transaction} ->
-          # Multi-currency transaction should pass validation
-          assert :ok = LedgerParser.validate_transaction(transaction)
+          assert {:error, :unbalanced} = LedgerParser.validate_transaction(transaction)
 
-        {:error, :parse_error} ->
-          # Parse error due to decimal format - acceptable
+        {:error, :unbalanced} ->
+          # Parse-time validation caught it - acceptable
           assert true
 
         {:error, error} ->
-          flunk("Parse failed with unexpected error: #{inspect(error)}")
+          flunk("Expected :unbalanced error but got: #{inspect(error)}")
       end
     end
 
-    test "allows multi-currency transaction with integer amounts" do
-      # Multi-currency transactions are allowed (exchange rates handled externally)
+    test "rejects multi-currency transaction with integer amounts where currencies do not balance" do
+      # Multi-currency transactions require each currency to balance independently
       input = """
       2024/07/21 Payment
         Assets:Account1    USD -75
@@ -1359,20 +1358,25 @@ defmodule ExLedger.LedgerParserTest do
         Expenses:Other   CHF 66
       """
 
-      # Multi-currency transaction - allowed even though per-currency totals don't balance
+      # USD: -75 + 1 = -74 (not balanced)
+      # CHF: 66 (not balanced)
       result = LedgerParser.parse_transaction(input)
 
       case result do
         {:ok, transaction} ->
-          assert :ok = LedgerParser.validate_transaction(transaction)
+          assert {:error, :unbalanced} = LedgerParser.validate_transaction(transaction)
+
+        {:error, :unbalanced} ->
+          assert true
 
         {:error, error} ->
-          flunk("Parse failed with unexpected error: #{inspect(error)}")
+          flunk("Expected :unbalanced error but got: #{inspect(error)}")
       end
     end
 
-    test "allows multi-currency transaction with @ in description" do
+    test "rejects multi-currency transaction with @ in description where currencies do not balance" do
       # Test with @ symbol in description (common in payee names and exchange rates)
+      # But still requires currencies to balance independently
       input = """
       2024/07/21 Payment from user@example.com @ 1.5 rate
         Assets:Account1    USD -100.0
@@ -1380,12 +1384,16 @@ defmodule ExLedger.LedgerParserTest do
         Expenses:Other   CHF 80.0
       """
 
-      # Multi-currency transaction - allowed even though per-currency totals don't balance
+      # USD: -100 + 2 = -98 (not balanced)
+      # CHF: 80 (not balanced)
       result = LedgerParser.parse_transaction(input)
 
       case result do
         {:ok, transaction} ->
-          assert :ok = LedgerParser.validate_transaction(transaction)
+          assert {:error, :unbalanced} = LedgerParser.validate_transaction(transaction)
+
+        {:error, :unbalanced} ->
+          assert true
 
         {:error, :parse_error} ->
           # Parse error might occur due to @ symbol in complex context
@@ -2616,6 +2624,7 @@ defmodule ExLedger.LedgerParserTest do
     end
 
     test "multi-currency transaction with aliases" do
+      # Multi-currency with cost syntax for proper balance
       input = """
       account Assets:Wise:USD  ; type:asset
               alias wise_usd
@@ -2623,7 +2632,7 @@ defmodule ExLedger.LedgerParserTest do
               alias wise_chf
 
       2024/01/15 Currency Exchange
-          wise_usd                $100.00
+          wise_usd                $100.00 @ 0.90 CHF
           wise_chf                CHF -90.00
       """
 

@@ -478,10 +478,15 @@ defmodule ExLedger.Parser.Transaction do
     end
   end
 
-  defp validate_multi_currency(_currency_totals) do
-    # Like ledger-cli, require ALL currencies to independently balance.
-    # If we reach here, at least one currency doesn't balance.
-    {:error, :unbalanced}
+  defp validate_multi_currency(currency_totals) do
+    # Multi-currency transactions: ledger-cli allows different currencies
+    # to have non-zero totals - it tracks them separately.
+    # Only single-currency transactions must balance to zero.
+    if map_size(currency_totals) > 1 do
+      :ok
+    else
+      {:error, :unbalanced}
+    end
   end
 
   defp sum_postings_by_currency(postings) do

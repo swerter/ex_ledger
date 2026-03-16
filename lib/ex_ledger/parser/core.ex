@@ -23,7 +23,8 @@ defmodule ExLedger.Parser.Core do
           must_balance: boolean(),
           cost: cost() | nil,
           actual_date: Date.t() | nil,
-          effective_date: Date.t() | nil
+          effective_date: Date.t() | nil,
+          assertion: amount() | nil
         }
 
   @type cost :: %{
@@ -345,6 +346,14 @@ defmodule ExLedger.Parser.Core do
 
   cost_spec = choice([total_cost, per_unit_cost])
 
+  # Balance assertion: = AMOUNT (e.g., "0 = 45000.00 CHF" asserts balance equals 45000.00 CHF)
+  balance_assertion =
+    ignore(optional_whitespace)
+    |> ignore(string("="))
+    |> ignore(optional_whitespace)
+    |> concat(amount_value)
+    |> unwrap_and_tag(:assertion)
+
   posting_with_optional_amount =
     ignore(indentation)
     |> concat(account_name)
@@ -352,6 +361,7 @@ defmodule ExLedger.Parser.Core do
       ignore(ascii_string([?\s, ?\t], min: 2))
       |> concat(amount_value |> unwrap_and_tag(:amount))
       |> optional(cost_spec)
+      |> optional(balance_assertion)
     )
     |> ignore(inline_comment)
     |> ignore(optional_whitespace)
@@ -580,6 +590,7 @@ defmodule ExLedger.Parser.Core do
     virtual = Keyword.get(parts, :virtual, false)
     must_balance = Keyword.get(parts, :must_balance, false)
     cost = Keyword.get(parts, :cost)
+    assertion = Keyword.get(parts, :assertion)
 
     %{
       account: account,
@@ -591,7 +602,8 @@ defmodule ExLedger.Parser.Core do
       must_balance: must_balance,
       cost: cost,
       actual_date: nil,
-      effective_date: nil
+      effective_date: nil,
+      assertion: assertion
     }
   end
 

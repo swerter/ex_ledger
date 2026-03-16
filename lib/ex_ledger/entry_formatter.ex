@@ -23,15 +23,15 @@ defmodule ExLedger.EntryFormatter do
       |> Enum.with_index()
       |> Enum.flat_map(fn {posting, index} ->
         account = fetch_value(posting, :account, "")
-        amount = format_posting_amount(fetch_value(posting, :amount))
+        amount_with_assertion = format_posting_amount_with_assertion(posting)
         metadata_to_filter = if include_notes and index == 0, do: transaction_metadata, else: %{}
         notes = if include_notes, do: format_posting_notes(posting, metadata_to_filter), else: []
 
         posting_line =
-          if amount == "" do
+          if amount_with_assertion == "" do
             "    #{account}"
           else
-            "    #{account}  #{amount}"
+            "    #{account}  #{amount_with_assertion}"
           end
 
         notes ++ [posting_line]
@@ -48,6 +48,18 @@ defmodule ExLedger.EntryFormatter do
     code_segment = if code == "", do: "", else: " (#{code})"
     comment_segment = if comment, do: "  ; #{comment}", else: ""
     "#{date_string}#{code_segment} #{payee}#{comment_segment}"
+  end
+
+  defp format_posting_amount_with_assertion(posting) do
+    amount = format_posting_amount(fetch_value(posting, :amount))
+    assertion = format_posting_amount(fetch_value(posting, :assertion))
+
+    case {amount, assertion} do
+      {"", ""} -> ""
+      {"", assertion_str} -> "0 = #{assertion_str}"
+      {amount_str, ""} -> amount_str
+      {amount_str, assertion_str} -> "#{amount_str} = #{assertion_str}"
+    end
   end
 
   defp format_posting_amount(nil), do: ""

@@ -8,7 +8,7 @@ defmodule ExLedger.LedgerParser do
 
   alias ExLedger.EntryFormatter
   alias ExLedger.ParseContext
-  alias ExLedger.Parser.{Accounts, Core, Declarations, Helpers, Timeclock, Transaction}
+  alias ExLedger.Parser.{Accounts, BalanceAssertions, Core, Declarations, Helpers, Timeclock, Transaction}
 
   # Re-export types from Core
   @type amount :: Core.amount()
@@ -120,8 +120,22 @@ defmodule ExLedger.LedgerParser do
     base_dir = Keyword.get(opts, :base_dir, ".")
     source_file = Keyword.get(opts, :source_file, nil)
     seen_files = Keyword.get(opts, :seen_files, MapSet.new())
+    skip_assertions = Keyword.get(opts, :skip_assertions, false)
 
-    parse_ledger_with_includes_with_import(input, base_dir, seen_files, source_file, nil)
+    case parse_ledger_with_includes_with_import(input, base_dir, seen_files, source_file, nil) do
+      {:ok, transactions, accounts} ->
+        # Validate balance assertions unless skipped
+        case BalanceAssertions.validate_assertions(transactions, skip_assertions: skip_assertions) do
+          :ok ->
+            {:ok, transactions, accounts}
+
+          {:error, failures} ->
+            {:error, {:balance_assertion_failed, failures}}
+        end
+
+      {:error, _} = error ->
+        error
+    end
   end
 
   @spec expand_includes(String.t(), String.t()) :: {:ok, String.t()} | {:error, ledger_error()}

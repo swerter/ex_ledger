@@ -412,6 +412,49 @@ defmodule ExLedger do
   defdelegate check_tags(transactions, contents, declared_tags), to: LedgerParser
 
   @doc """
+  Validates balance assertions in transactions.
+
+  Balance assertions use the syntax `AMOUNT = ASSERTION_AMOUNT` to verify
+  that the running balance of an account equals a specific value after the
+  posting is applied.
+
+  ## Options
+
+    * `:skip_assertions` - if `true`, skips validation and returns `:ok`
+
+  ## Examples
+
+      iex> input = \"""
+      ...> 2024/01/01 Opening
+      ...>     Assets:Cash  100 CHF
+      ...>     Equity:Opening  -100 CHF
+      ...>
+      ...> 2024/01/15 Balance Check
+      ...>     Assets:Cash  0 = 100 CHF
+      ...>     Equity:Adjustments  0
+      ...> \"""
+      iex> {:ok, transactions, _} = ExLedger.parse_ledger(input)
+      iex> ExLedger.validate_balance_assertions(transactions)
+      :ok
+  """
+  def validate_balance_assertions(transactions, opts \\ []) do
+    ExLedger.Parser.BalanceAssertions.validate_assertions(transactions, opts)
+  end
+
+  @doc """
+  Formats balance assertion failures as a human-readable error message.
+
+  ## Examples
+
+      iex> failure = %{account: "Assets:Cash", expected: %{value: 100.0, currency: "CHF"}, actual: %{value: 50.0, currency: "CHF"}, transaction_date: ~D[2024-01-15], transaction_payee: "Check", source_file: nil, source_line: nil}
+      iex> String.contains?(ExLedger.format_assertion_failures([failure]), "Assets:Cash")
+      true
+  """
+  def format_assertion_failures(failures) do
+    ExLedger.Parser.BalanceAssertions.format_failures(failures)
+  end
+
+  @doc """
   Builds summary statistics for the ledger.
 
   ## Examples

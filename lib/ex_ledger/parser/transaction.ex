@@ -333,11 +333,12 @@ defmodule ExLedger.Parser.Transaction do
   defp line_missing_double_space?(line) do
     trimmed = line |> String.split(";", parts: 2) |> List.first()
 
-    # Remove cost syntax (@ or @@) and anything after it before checking spacing
+    # Remove cost syntax (@ or @@) and balance assertion syntax (=) before checking spacing
     # Cost syntax: "10 AAPL @ $150.00" or "10 AAPL @@ $1500.00"
+    # Assertion syntax: "0 = 100 CHF" or "100 CHF = 200 CHF"
     line_without_cost =
       trimmed
-      |> String.replace(~r/\s+@@?\s+.+$/, "")
+      |> String.replace(~r/\s+(@@?\s+|=\s*).+$/, "")
 
     case Regex.scan(@amount_regex, line_without_cost, return: :index) do
       [] ->

@@ -371,10 +371,10 @@ defmodule ExLedger.CLI do
     filename = Path.basename(file)
 
     with {:file_read, {:ok, contents}} <- {:file_read, File.read(file)},
-         {:parsed, {:ok, transactions, accounts}} <-
+         {:parsed, {:ok, result}} <-
            {:parsed,
             LedgerParser.parse_ledger(contents, base_dir: base_dir, source_file: filename)} do
-      fun.(transactions, accounts, contents)
+      fun.(result.transactions, result.accounts, contents)
     else
       {:file_read, {:error, reason}} ->
         halt_error("cannot read file #{file}: #{:file.format_error(reason)}", 1)

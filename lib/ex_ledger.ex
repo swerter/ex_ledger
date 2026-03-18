@@ -67,8 +67,8 @@ defmodule ExLedger do
   """
   @spec format_ledger(String.t()) :: {:ok, String.t()} | {:error, term()}
   def format_ledger(input) when is_binary(input) do
-    with {:ok, transactions, _accounts} <- LedgerParser.parse_ledger(input) do
-      {:ok, LedgerParser.format_transactions(transactions)}
+    with {:ok, result} <- LedgerParser.parse_ledger(input) do
+      {:ok, LedgerParser.format_transactions(result.transactions)}
     end
   end
 
@@ -87,8 +87,11 @@ defmodule ExLedger do
   @doc """
   Parses a ledger string with support for include directives and account declarations.
 
-  Returns `{:ok, transactions, accounts}` with all transactions from the main content and any
-  included files, plus a map of account declarations.
+  Returns `{:ok, result}` where result is a map containing:
+  - `:transactions` - List of parsed transactions
+  - `:accounts` - Map of account names to their types
+  - `:prices` - List of price directives (P DATE SYMBOL PRICE)
+  - `:commodities` - Map of commodity symbols to their full definitions
 
   ## Options
     * `:base_dir` - Base directory for resolving relative include paths (default: ".")
@@ -97,13 +100,13 @@ defmodule ExLedger do
   ## Examples
 
       iex> input = "2024/01/01 Opening\n    Assets:Cash  $10.00\n    Equity:Opening\n"
-      iex> {:ok, transactions, accounts} = ExLedger.parse_ledger(input)
-      iex> length(transactions)
+      iex> {:ok, result} = ExLedger.parse_ledger(input)
+      iex> length(result.transactions)
       1
 
       iex> input = "2024/01/01 Opening\n    Assets:Cash  $10.00\n    Equity:Opening\n"
-      iex> {:ok, [transaction], _accounts} = ExLedger.parse_ledger(input, source_file: "journal.ledger")
-      iex> transaction.source_file
+      iex> {:ok, result} = ExLedger.parse_ledger(input, source_file: "journal.ledger")
+      iex> hd(result.transactions).source_file
       "journal.ledger"
   """
   def parse_ledger(input, opts \\ []) do

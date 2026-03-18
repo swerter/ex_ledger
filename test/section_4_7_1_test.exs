@@ -27,7 +27,7 @@ defmodule ExLedger.Section471Test do
   # Helper to parse a ledger and return transactions
   defp parse_ledger!(input) do
     case LedgerParser.parse_ledger(input) do
-      {:ok, transactions, _accounts} -> transactions
+      {:ok, result} -> result.transactions
       {:error, reason} -> raise "Parse failed: #{inspect(reason)}"
     end
   end

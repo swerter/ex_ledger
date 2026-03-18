@@ -55,6 +55,21 @@ defmodule ExLedger.Parser.Core do
           assertions: [String.t()]
         }
 
+  @type price_directive :: %{
+          date: Date.t(),
+          commodity: String.t(),
+          price: amount()
+        }
+
+  @type commodity_definition :: %{
+          symbol: String.t(),
+          format: String.t() | nil,
+          note: String.t() | nil,
+          alias: String.t() | nil,
+          default: boolean(),
+          nomarket: boolean()
+        }
+
   @type parse_error ::
           :missing_date
           | :missing_payee

@@ -129,7 +129,7 @@ defmodule ExLedger.LedgerParserAdditionalTest do
 
   describe "parse_ledger/1" do
     test "returns empty list for empty input" do
-      assert {:ok, [], _accounts} = LedgerParser.parse_ledger("")
+      assert {:ok, %{transactions: []}} = LedgerParser.parse_ledger("")
     end
   end
 
@@ -191,7 +191,7 @@ defmodule ExLedger.LedgerParserAdditionalTest do
           Equity:Opening
       """
 
-      assert {:ok, [transaction], _accounts} =
+      assert {:ok, %{transactions: [transaction]}} =
                LedgerParser.parse_ledger(input, source_file: "main.ledger")
 
       assert transaction.source_file == "main.ledger"
@@ -212,7 +212,7 @@ defmodule ExLedger.LedgerParserAdditionalTest do
           Equity:Opening
       """
 
-      assert {:ok, transactions, _accounts} =
+      assert {:ok, %{transactions: transactions}} =
                LedgerParser.parse_ledger(input, source_file: "main.ledger")
 
       assert Enum.map(transactions, & &1.payee) == ["Payee", "Payee Two"]
@@ -222,7 +222,7 @@ defmodule ExLedger.LedgerParserAdditionalTest do
 
   describe "parse_ledger_with_includes/4" do
     test "returns empty result for empty content" do
-      assert {:ok, [], %{}} = LedgerParser.parse_ledger("", base_dir: ".")
+      assert {:ok, %{transactions: [], accounts: %{}}} = LedgerParser.parse_ledger("", base_dir: ".")
     end
 
     test "adds source files to included transactions", %{tmp_dir: tmp_dir} do
@@ -242,7 +242,7 @@ defmodule ExLedger.LedgerParserAdditionalTest do
           Equity:Opening
       """
 
-      assert {:ok, transactions, _accounts} =
+      assert {:ok, %{transactions: transactions}} =
                LedgerParser.parse_ledger(
                  content,
                  base_dir: tmp_dir,
@@ -272,7 +272,7 @@ defmodule ExLedger.LedgerParserAdditionalTest do
       include included.ledger
       """
 
-      assert {:ok, [transaction], _accounts} =
+      assert {:ok, %{transactions: [transaction]}} =
                LedgerParser.parse_ledger(
                  content,
                  base_dir: tmp_dir,

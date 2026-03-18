@@ -49,7 +49,7 @@ defmodule ExLedger.BalanceMultiCurrencyTest do
         Assets:Paypal:USD    CHF 90.00
       """
 
-      {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input)
       balances = LedgerParser.balance(transactions)
 
       # Expected: Should track currencies separately
@@ -94,7 +94,7 @@ defmodule ExLedger.BalanceMultiCurrencyTest do
         Assets:Paypal:USD    CHF 90.00
       """
 
-      {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input)
       report = LedgerParser.balance_report(transactions)
 
       # Expected output (from ledger CLI):
@@ -149,7 +149,7 @@ defmodule ExLedger.BalanceMultiCurrencyTest do
         Income:Sales:USD     CHF -90.00
       """
 
-      {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input)
       report = LedgerParser.balance_report(transactions)
 
       # After full conversion:
@@ -190,7 +190,7 @@ defmodule ExLedger.BalanceMultiCurrencyTest do
 
         # Get actual output from exledger
         {:ok, content} = File.read(ledger_file)
-        {:ok, transactions, _accounts} = LedgerParser.parse_ledger(content)
+        {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(content)
         exledger_output = LedgerParser.balance_report(transactions)
 
         # Key differences to check:

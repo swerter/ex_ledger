@@ -7,18 +7,29 @@ defmodule ExLedger.LedgerParser do
   """
 
   alias ExLedger.EntryFormatter
+  alias ExLedger.Exchange
   alias ExLedger.ParseContext
-  alias ExLedger.Parser.{Accounts, BalanceAssertions, Core, Declarations, Helpers, Timeclock, Transaction}
+  alias ExLedger.Parser.{Accounts, BalanceAssertions, Core, Declarations, Helpers, Price, Timeclock, Transaction}
 
   # Re-export types from Core
   @type amount :: Core.amount()
   @type posting :: Core.posting()
   @type transaction :: Core.transaction()
   @type account_declaration :: Core.account_declaration()
+  @type price_directive :: Core.price_directive()
+  @type commodity_definition :: Core.commodity_definition()
   @type parse_error :: Core.parse_error()
   @type parse_error_detail :: Core.parse_error_detail()
   @type ledger_error :: Core.ledger_error()
   @type time_entry :: Timeclock.time_entry()
+  @type price_db :: Price.price_db()
+
+  @type parse_result :: %{
+          transactions: [transaction()],
+          accounts: %{String.t() => atom()},
+          prices: [price_directive()],
+          commodities: %{String.t() => commodity_definition()}
+        }
 
   # Delegate to Parser.Transaction
   defdelegate parse_transaction(input), to: Transaction
@@ -44,11 +55,24 @@ defmodule ExLedger.LedgerParser do
   defdelegate last_transaction(transactions), to: Declarations
   defdelegate extract_payee_declarations(input), to: Declarations
   defdelegate extract_commodity_declarations(input), to: Declarations
+  defdelegate extract_full_commodity_declarations(input), to: Declarations
   defdelegate extract_tag_declarations(input), to: Declarations
   defdelegate check_accounts(transactions, accounts), to: Declarations
   defdelegate check_payees(transactions, declared_payees), to: Declarations
   defdelegate check_commodities(transactions, declared_commodities), to: Declarations
   defdelegate check_tags(transactions, contents, declared_tags), to: Declarations
+
+  # Delegate to Parser.Price
+  defdelegate extract_price_directives(input), to: Price
+  defdelegate parse_price_directive(line), to: Price
+  defdelegate build_price_db(prices), to: Price
+  defdelegate lookup_price(from_commodity, to_commodity, date, price_db), to: Price
+
+  # Delegate to Exchange
+  defdelegate exchange(transactions, target_currency, price_db), to: Exchange
+  defdelegate convert_amount(amount, target_currency, date, price_db), to: Exchange
+  defdelegate convert_transaction(transaction, target_currency, price_db), to: Exchange
+  defdelegate can_convert?(from_currency, to_currency, date, price_db), to: Exchange
 
   # Delegate to Parser.Timeclock
   defdelegate parse_timeclock_entries(input), to: Timeclock
@@ -86,7 +110,7 @@ defmodule ExLedger.LedgerParser do
     filename = Path.basename(path)
 
     with {:ok, contents} <- File.read(path),
-         {:ok, _transactions, _accounts} <-
+         {:ok, _result} <-
            parse_ledger(contents, base_dir: base_dir, source_file: filename) do
       {:ok, :valid}
     else
@@ -102,19 +126,27 @@ defmodule ExLedger.LedgerParser do
   @spec check_string(String.t(), String.t()) :: boolean()
   def check_string(content, base_dir \\ ".") when is_binary(content) and is_binary(base_dir) do
     case parse_ledger(content, base_dir: base_dir) do
-      {:ok, _, _} -> true
+      {:ok, _} -> true
       _ -> false
     end
   end
 
   @doc """
   Parses a ledger file with support for include directives and account declarations.
+
+  Returns a map containing:
+  - `:transactions` - List of parsed transactions
+  - `:accounts` - Map of account names to their types
+  - `:prices` - List of price directives
+  - `:commodities` - Map of commodity symbols to their definitions
   """
   @spec parse_ledger(String.t(), keyword()) ::
-          {:ok, [transaction()], %{String.t() => atom()}} | {:error, ledger_error()}
+          {:ok, parse_result()} | {:error, ledger_error()}
   def parse_ledger(input, opts \\ [])
 
-  def parse_ledger("", _opts), do: {:ok, [], %{}}
+  def parse_ledger("", _opts) do
+    {:ok, %{transactions: [], accounts: %{}, prices: [], commodities: %{}}}
+  end
 
   def parse_ledger(input, opts) when is_binary(input) do
     base_dir = Keyword.get(opts, :base_dir, ".")
@@ -127,7 +159,19 @@ defmodule ExLedger.LedgerParser do
         # Validate balance assertions unless skipped
         case BalanceAssertions.validate_assertions(transactions, skip_assertions: skip_assertions) do
           :ok ->
-            {:ok, transactions, accounts}
+            # Extract prices and commodities
+            # NOTE: These scan the input again. For very large files, could be
+            # optimized by extracting during initial line-by-line processing.
+            prices = Price.extract_price_directives(input)
+            commodities = Declarations.extract_full_commodity_declarations(input)
+
+            {:ok,
+             %{
+               transactions: transactions,
+               accounts: accounts,
+               prices: prices,
+               commodities: commodities
+             }}
 
           {:error, failures} ->
             {:error, {:balance_assertion_failed, failures}}
@@ -543,29 +587,29 @@ defmodule ExLedger.LedgerParser do
 
   defp process_line_for_transaction(
          {line, index},
-         {chunks, current_lines, start_line, in_account_block}
+         {chunks, current_lines, start_line, in_directive_block}
        ) do
     trimmed = String.trim(line)
 
     cond do
-      new_account_declaration?(trimmed) ->
+      new_account_declaration?(trimmed) or new_commodity_declaration?(trimmed) ->
         {new_chunks, _, _, _} = handle_empty_line(chunks, current_lines, start_line, index)
         {new_chunks, [], nil, true}
 
-      in_account_block ->
-        handle_account_block_line(line, trimmed, index, chunks, current_lines, start_line)
+      in_directive_block ->
+        handle_directive_block_line(line, trimmed, index, chunks, current_lines, start_line)
 
       trimmed == "" ->
         handle_empty_line(chunks, current_lines, start_line, index)
 
       timeclock_line?(line) ->
-        {chunks, current_lines, start_line, in_account_block}
+        {chunks, current_lines, start_line, in_directive_block}
 
       skippable_line?(trimmed, current_lines) ->
-        {chunks, current_lines, start_line, in_account_block}
+        {chunks, current_lines, start_line, in_directive_block}
 
       true ->
-        process_regular_line(line, index, chunks, current_lines, start_line, in_account_block)
+        process_regular_line(line, index, chunks, current_lines, start_line, in_directive_block)
     end
   end
 
@@ -573,23 +617,27 @@ defmodule ExLedger.LedgerParser do
     String.starts_with?(trimmed, "account ") and not String.contains?(trimmed, ";")
   end
 
-  defp handle_account_block_line(line, trimmed, index, chunks, current_lines, start_line) do
+  defp new_commodity_declaration?(trimmed) do
+    String.starts_with?(trimmed, "commodity ") and not String.contains?(trimmed, ";")
+  end
+
+  defp handle_directive_block_line(line, trimmed, index, chunks, current_lines, start_line) do
     cond do
       trimmed == "" ->
-        # Exit account block on empty line
+        # Exit directive block on empty line
         {chunks, current_lines, start_line, false}
 
       not String.starts_with?(line, " ") and not String.starts_with?(line, "\t") ->
-        # Exit account block on non-indented line
-        handle_account_block_exit(line, trimmed, index, chunks, current_lines, start_line)
+        # Exit directive block on non-indented line
+        handle_directive_block_exit(line, trimmed, index, chunks, current_lines, start_line)
 
       true ->
-        # Still within account block (indented line)
+        # Still within directive block (indented line)
         {chunks, current_lines, start_line, true}
     end
   end
 
-  defp handle_account_block_exit(line, trimmed, index, chunks, current_lines, start_line) do
+  defp handle_directive_block_exit(line, trimmed, index, chunks, current_lines, start_line) do
     if skippable_line?(trimmed, current_lines) do
       {chunks, current_lines, start_line, false}
     else
@@ -597,13 +645,13 @@ defmodule ExLedger.LedgerParser do
     end
   end
 
-  defp process_regular_line(line, index, chunks, current_lines, start_line, in_account_block) do
+  defp process_regular_line(line, index, chunks, current_lines, start_line, in_directive_block) do
     if starts_new_entry?(line) and current_lines != [] do
       chunk = Enum.reverse(current_lines) |> Enum.join("\n")
-      {[{chunk, start_line} | chunks], [line], index, in_account_block}
+      {[{chunk, start_line} | chunks], [line], index, in_directive_block}
     else
       start_line = start_line || index
-      {chunks, [line | current_lines], start_line, in_account_block}
+      {chunks, [line | current_lines], start_line, in_directive_block}
     end
   end
 

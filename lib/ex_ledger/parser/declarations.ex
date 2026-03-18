@@ -88,11 +88,36 @@ defmodule ExLedger.Parser.Declarations do
   end
 
   @doc """
-  Extracts commodity declarations from input.
+  Extracts commodity declarations from input (symbols only).
   """
   @spec extract_commodity_declarations(String.t()) :: MapSet.t(String.t())
   def extract_commodity_declarations(input) when is_binary(input) do
     extract_declarations(input, "commodity ", &extract_commodity_value/1)
+  end
+
+  @doc """
+  Extracts full commodity definitions from input.
+
+  Parses commodity declarations with their subdirectives:
+  - format: Display format string
+  - note: Description
+  - alias: Alternative symbol
+  - default: Whether this is the default commodity
+  - nomarket: Whether to exclude from market value calculations
+
+  ## Example
+
+      commodity CHF
+          format CHF 1'000.00
+          note Swiss Franc
+
+  Returns a map of symbol => commodity_definition.
+  """
+  @spec extract_full_commodity_declarations(String.t()) :: %{String.t() => map()}
+  def extract_full_commodity_declarations(input) when is_binary(input) do
+    input
+    |> String.split("\n")
+    |> parse_commodity_blocks(%{}, nil)
   end
 
   @doc """
@@ -278,5 +303,85 @@ defmodule ExLedger.Parser.Declarations do
       "_cost-posting",
       "_conversion-posting"
     ])
+  end
+
+  # Commodity block parsing
+
+  defp parse_commodity_blocks([], acc, nil), do: acc
+
+  defp parse_commodity_blocks([], acc, current) do
+    finalize_commodity(acc, current)
+  end
+
+  defp parse_commodity_blocks([line | rest], acc, current) do
+    trimmed = String.trim(line)
+    indented? = String.starts_with?(line, " ") or String.starts_with?(line, "\t")
+
+    cond do
+      # Start of a new commodity block
+      String.starts_with?(trimmed, "commodity ") ->
+        symbol = extract_commodity_symbol_from_line(trimmed)
+        new_acc = if current, do: finalize_commodity(acc, current), else: acc
+        new_current = new_commodity_definition(symbol)
+        parse_commodity_blocks(rest, new_acc, new_current)
+
+      # Subdirective within a commodity block
+      indented? and current != nil ->
+        updated = parse_commodity_subdirective(current, trimmed)
+        parse_commodity_blocks(rest, acc, updated)
+
+      # Other line - finalize current if any
+      true ->
+        new_acc = if current, do: finalize_commodity(acc, current), else: acc
+        parse_commodity_blocks(rest, new_acc, nil)
+    end
+  end
+
+  defp new_commodity_definition(symbol) do
+    %{
+      symbol: symbol,
+      format: nil,
+      note: nil,
+      alias: nil,
+      default: false,
+      nomarket: false
+    }
+  end
+
+  defp finalize_commodity(acc, commodity) do
+    Map.put(acc, commodity.symbol, commodity)
+  end
+
+  defp extract_commodity_symbol_from_line(line) do
+    line
+    |> String.trim_leading("commodity ")
+    |> String.trim()
+    |> extract_commodity_value()
+  end
+
+  defp parse_commodity_subdirective(commodity, line) do
+    cond do
+      String.starts_with?(line, "format ") ->
+        format = String.trim_leading(line, "format ") |> String.trim()
+        %{commodity | format: format}
+
+      String.starts_with?(line, "note ") ->
+        note = String.trim_leading(line, "note ") |> String.trim()
+        %{commodity | note: note}
+
+      String.starts_with?(line, "alias ") ->
+        alias_sym = String.trim_leading(line, "alias ") |> String.trim()
+        %{commodity | alias: alias_sym}
+
+      line == "default" ->
+        %{commodity | default: true}
+
+      line == "nomarket" ->
+        %{commodity | nomarket: true}
+
+      # Unknown subdirective - ignore
+      true ->
+        commodity
+    end
   end
 end

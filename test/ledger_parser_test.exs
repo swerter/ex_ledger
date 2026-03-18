@@ -955,7 +955,7 @@ defmodule ExLedger.LedgerParserTest do
           Liabilities:Credit Card
       """
 
-      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input)
 
       assert length(transactions) == 4
 
@@ -994,7 +994,7 @@ defmodule ExLedger.LedgerParserTest do
           Liabilities:Credit Card
       """
 
-      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input)
 
       assert length(transactions) == 4
 
@@ -1015,15 +1015,15 @@ defmodule ExLedger.LedgerParserTest do
     end
 
     test "handles empty input" do
-      assert {:ok, [], _accounts} = LedgerParser.parse_ledger("")
-      assert {:ok, [], _accounts} = LedgerParser.parse_ledger("\n\n")
+      assert {:ok, %{transactions: []}} = LedgerParser.parse_ledger("")
+      assert {:ok, %{transactions: []}} = LedgerParser.parse_ledger("\n\n")
     end
 
     test "parses fixture bills.ledger with attachments" do
       path = Path.expand("fixtures/bills.ledger", __DIR__)
       content = File.read!(path)
 
-      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(content)
+      assert {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(content)
       assert length(transactions) == 2
 
       first_transaction = hd(transactions)
@@ -1075,7 +1075,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Bank:Checking
       """
 
-      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input)
 
       [_first_posting, second_posting] = transaction.postings
       attachments = Map.get(second_posting.metadata, "Attachment")
@@ -1098,7 +1098,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Bank:Checking
       """
 
-      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input)
 
       assert transaction.metadata["Attachment"] == [
                "receipts/2025-01-05_Swiss_Post.pdf",
@@ -1122,7 +1122,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Bank:Checking
       """
 
-      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input)
 
       formatted = EntryFormatter.format_entry(transaction, nil, true)
 
@@ -1157,7 +1157,7 @@ defmodule ExLedger.LedgerParserTest do
           Account:F
       """
 
-      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input)
 
       assert length(transactions) == 3
 
@@ -1183,7 +1183,7 @@ defmodule ExLedger.LedgerParserTest do
           Account:C  CHF -300.00
       """
 
-      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input)
 
       assert transaction.date == ~D[2024-01-21]
       assert transaction.payee == "Multi-posting transaction"
@@ -1206,7 +1206,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input)
 
       [posting1, posting2] = transaction.postings
 
@@ -1228,7 +1228,7 @@ defmodule ExLedger.LedgerParserTest do
           Account:C  CHF -116.80 ;; comment 3
       """
 
-      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input)
 
       assert length(transactions) == 2
 
@@ -1248,7 +1248,7 @@ defmodule ExLedger.LedgerParserTest do
           Account:B
       """
 
-      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input)
       assert transaction.date == ~D[2024-06-01]
       assert transaction.payee == "Transaction with dash date"
     end
@@ -1261,7 +1261,7 @@ defmodule ExLedger.LedgerParserTest do
           Account:C  USD -100.0
       """
 
-      assert {:ok, [transaction], _accounts} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input)
       assert length(transaction.postings) == 3
 
       # Check amounts are parsed correctly
@@ -1728,7 +1728,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      assert {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input)
       assert length(transactions) == 1
     end
   end
@@ -1838,7 +1838,7 @@ defmodule ExLedger.LedgerParserTest do
       # Parse with includes
       {:ok, content} = File.read(main_file)
 
-      assert {:ok, transactions, accounts} =
+      assert {:ok, %{transactions: transactions, accounts: accounts}} =
                LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       # Should have both transactions
@@ -1870,7 +1870,7 @@ defmodule ExLedger.LedgerParserTest do
 
       {:ok, content} = File.read(main_file)
 
-      assert {:ok, _transactions, accounts} =
+      assert {:ok, %{accounts: accounts}} =
                LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       assert accounts["Assets:Checking"] == :asset
@@ -1912,7 +1912,7 @@ defmodule ExLedger.LedgerParserTest do
 
       {:ok, content} = File.read(main_file)
 
-      assert {:ok, transactions, _accounts} =
+      assert {:ok, %{transactions: transactions}} =
                LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       # Should have all three transactions
@@ -1964,7 +1964,7 @@ defmodule ExLedger.LedgerParserTest do
 
       {:ok, content} = File.read(main_file)
 
-      assert {:ok, transactions, _accounts} =
+      assert {:ok, %{transactions: transactions}} =
                LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       assert length(transactions) == 2
@@ -2057,7 +2057,7 @@ defmodule ExLedger.LedgerParserTest do
 
       {:ok, content} = File.read(main_file)
 
-      assert {:ok, transactions, _accounts} =
+      assert {:ok, %{transactions: transactions}} =
                LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       assert length(transactions) == 1
@@ -2093,7 +2093,7 @@ defmodule ExLedger.LedgerParserTest do
 
       {:ok, content} = File.read(main_file)
 
-      assert {:ok, transactions, accounts} =
+      assert {:ok, %{transactions: transactions, accounts: accounts}} =
                LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       # Should have both transactions
@@ -2133,7 +2133,7 @@ defmodule ExLedger.LedgerParserTest do
 
       {:ok, content} = File.read(ledger_file)
 
-      assert {:ok, transactions, accounts} =
+      assert {:ok, %{transactions: transactions, accounts: accounts}} =
                LedgerParser.parse_ledger(content, base_dir: test_dir)
 
       # Should have both transactions
@@ -2324,7 +2324,7 @@ defmodule ExLedger.LedgerParserTest do
           checking
       """
 
-      {:ok, transactions, accounts} =
+      {:ok, %{transactions: transactions, accounts: accounts}} =
         LedgerParser.parse_ledger(input, base_dir: ".")
 
       # Resolve aliases before calculating balance
@@ -2357,7 +2357,7 @@ defmodule ExLedger.LedgerParserTest do
           checking
       """
 
-      {:ok, transactions, accounts} =
+      {:ok, %{transactions: transactions, accounts: accounts}} =
         LedgerParser.parse_ledger(input, base_dir: ".")
 
       # Without resolving aliases, stats would count "food" and "checking" as separate accounts
@@ -2381,7 +2381,7 @@ defmodule ExLedger.LedgerParserTest do
           checking
       """
 
-      {:ok, transactions, accounts} =
+      {:ok, %{transactions: transactions, accounts: accounts}} =
         LedgerParser.parse_ledger(input, base_dir: ".")
 
       # Resolve aliases before listing
@@ -2407,7 +2407,7 @@ defmodule ExLedger.LedgerParserTest do
           checking
       """
 
-      {:ok, transactions, accounts} =
+      {:ok, %{transactions: transactions, accounts: accounts}} =
         LedgerParser.parse_ledger(input, base_dir: ".")
 
       account_list = LedgerParser.list_accounts(transactions, accounts)
@@ -2434,7 +2434,7 @@ defmodule ExLedger.LedgerParserTest do
           Assets:Checking
       """
 
-      {:ok, transactions, accounts} =
+      {:ok, %{transactions: transactions, accounts: accounts}} =
         LedgerParser.parse_ledger(input, base_dir: ".")
 
       # Resolve aliases before budget calculation
@@ -2538,7 +2538,7 @@ defmodule ExLedger.LedgerParserTest do
           cash
       """
 
-      {:ok, transactions, accounts} = LedgerParser.parse_ledger(input, base_dir: ".")
+      {:ok, %{transactions: transactions, accounts: accounts}} = LedgerParser.parse_ledger(input, base_dir: ".")
 
       # Verify account types
       assert accounts["Expenses:Food"] == :expense
@@ -2573,7 +2573,7 @@ defmodule ExLedger.LedgerParserTest do
           bank
       """
 
-      {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input, base_dir: ".")
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, base_dir: ".")
 
       # Both transactions should have aliases resolved automatically
       [txn1, txn2] = transactions
@@ -2598,7 +2598,7 @@ defmodule ExLedger.LedgerParserTest do
           Income:Salary
       """
 
-      {:ok, transactions, accounts} = LedgerParser.parse_ledger(input, base_dir: ".")
+      {:ok, %{transactions: transactions, accounts: accounts}} = LedgerParser.parse_ledger(input, base_dir: ".")
 
       # Verify canonical account has correct type
       assert accounts["Assets:Checking"] == :asset
@@ -2628,7 +2628,7 @@ defmodule ExLedger.LedgerParserTest do
           wise_chf                CHF -90.00
       """
 
-      {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input, base_dir: ".")
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, base_dir: ".")
 
       [transaction] = transactions
       posting_accounts = Enum.map(transaction.postings, & &1.account)
@@ -2655,7 +2655,7 @@ defmodule ExLedger.LedgerParserTest do
           cash
       """
 
-      {:ok, transactions, _accounts} = LedgerParser.parse_ledger(input, base_dir: ".")
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, base_dir: ".")
       balances = ExLedger.balance(transactions)
 
       # Balances should use canonical account names
@@ -2906,7 +2906,7 @@ defmodule ExLedger.LedgerParserTest do
       result = LedgerParser.parse_ledger(input, source_file: "bookings.ledger")
 
       case result do
-        {:ok, transactions, _accounts} ->
+        {:ok, %{transactions: transactions}} ->
           assert length(transactions) == 4
 
           # Check first transaction

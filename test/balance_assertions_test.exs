@@ -12,7 +12,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      {:ok, [transaction], _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       [checking_posting, _] = transaction.postings
 
       assert checking_posting.assertion == %{
@@ -29,7 +29,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      {:ok, [transaction], _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       [checking_posting, _] = transaction.postings
 
       assert checking_posting.assertion == %{
@@ -46,7 +46,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Income:Salary  -100 CHF
       """
 
-      {:ok, [transaction], _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       [checking_posting, _] = transaction.postings
 
       assert checking_posting.amount == %{
@@ -69,7 +69,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Income:Salary  -100 CHF
       """
 
-      {:ok, [transaction], _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       [checking_posting, salary_posting] = transaction.postings
 
       assert checking_posting.assertion == nil
@@ -89,7 +89,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert :ok = BalanceAssertions.validate_assertions(transactions)
     end
 
@@ -108,7 +108,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert :ok = BalanceAssertions.validate_assertions(transactions)
     end
 
@@ -123,7 +123,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert {:error, [failure]} = BalanceAssertions.validate_assertions(transactions)
 
       assert failure.account == "Assets:Cash"
@@ -146,7 +146,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert {:error, failures} = BalanceAssertions.validate_assertions(transactions)
 
       assert length(failures) == 2
@@ -165,7 +165,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert :ok = BalanceAssertions.validate_assertions(transactions, skip_assertions: true)
     end
   end
@@ -186,7 +186,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert :ok = BalanceAssertions.validate_assertions(transactions)
     end
 
@@ -201,7 +201,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert {:error, [failure]} = BalanceAssertions.validate_assertions(transactions)
 
       assert failure.expected.value == 150.0
@@ -222,7 +222,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           (Budget:Food)  0 = 0 CHF
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert :ok = BalanceAssertions.validate_assertions(transactions)
     end
 
@@ -238,7 +238,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           (Budget:Food)  0 = 999 CHF
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert {:error, [failure]} = BalanceAssertions.validate_assertions(transactions)
       assert failure.account == "Budget:Food"
       assert failure.expected.value == 999.0
@@ -256,7 +256,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           (Budget:Food)  50 CHF
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert :ok = BalanceAssertions.validate_assertions(transactions)
     end
   end
@@ -273,7 +273,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert :ok = BalanceAssertions.validate_assertions(transactions)
     end
 
@@ -314,7 +314,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert :ok = BalanceAssertions.validate_assertions(transactions)
     end
   end
@@ -346,7 +346,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      assert {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      assert {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert length(transactions) == 2
     end
 
@@ -361,7 +361,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      assert {:ok, transactions, _} = LedgerParser.parse_ledger(input)
+      assert {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input)
       assert length(transactions) == 2
     end
   end
@@ -496,7 +496,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Equity:Adjustments  0
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       formatted = LedgerParser.format_transactions(transactions)
 
       # The formatter shows 0.00 for the zero amount
@@ -510,7 +510,7 @@ defmodule ExLedger.BalanceAssertionsTest do
           Income:Bonus  -50 CHF
       """
 
-      {:ok, transactions, _} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       formatted = LedgerParser.format_transactions(transactions)
 
       assert formatted =~ "Assets:Cash  50.00 CHF = 150.00 CHF"

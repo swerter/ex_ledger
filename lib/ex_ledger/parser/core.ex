@@ -139,11 +139,11 @@ defmodule ExLedger.Parser.Core do
 
   defparsec(:account_declaration_parser, account_declaration)
 
-  # Date: YYYY/MM/DD, YYYY/M/D, YYYY-MM-DD, or YYYY-M-D
+  # Date: YYYY/MM/DD, YYYY-MM-DD, or YYYY.MM.DD (and variants with single digit month/day)
   year = integer(4)
   month = integer(min: 1, max: 2)
   day = integer(min: 1, max: 2)
-  date_separator = choice([string("/"), string("-")])
+  date_separator = choice([string("/"), string("-"), string(".")])
 
   date_value =
     year
@@ -329,12 +329,8 @@ defmodule ExLedger.Parser.Core do
       regular_account_name |> unwrap_and_tag(:account)
     ])
 
-  # Indentation
-  indentation =
-    choice([
-      ascii_string([?\t], min: 1),
-      ascii_string([?\s], min: 1)
-    ])
+  # Indentation (tabs, spaces, or any combination)
+  indentation = ascii_string([?\s, ?\t], min: 1)
 
   metadata_key =
     ascii_char([?A..?Z])
@@ -375,15 +371,23 @@ defmodule ExLedger.Parser.Core do
     |> concat(amount_value)
     |> unwrap_and_tag(:assertion)
 
-  posting_with_optional_amount =
-    ignore(indentation)
-    |> concat(account_name)
-    |> optional(
+  # Posting with amount and optional assertion, OR bare assertion without amount
+  posting_amount_part =
+    choice([
+      # Amount with optional cost and optional assertion: "  $100.00 @ $1.10 = $100.00"
       ignore(ascii_string([?\s, ?\t], min: 2))
       |> concat(amount_value |> unwrap_and_tag(:amount))
       |> optional(cost_spec)
-      |> optional(balance_assertion)
-    )
+      |> optional(balance_assertion),
+      # Bare assertion without amount: "  = $950.00"
+      ignore(ascii_string([?\s, ?\t], min: 2))
+      |> concat(balance_assertion)
+    ])
+
+  posting_with_optional_amount =
+    ignore(indentation)
+    |> concat(account_name)
+    |> optional(posting_amount_part)
     |> ignore(inline_comment)
     |> ignore(optional_whitespace)
     |> ignore(optional(string("\n")))
@@ -731,7 +735,7 @@ defmodule ExLedger.Parser.Core do
 
   # Parse posting date syntax from comment: [DATE], [=DATE], [DATE=DATE]
   defp parse_posting_dates(comment) do
-    date_regex = ~r/\[(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})?(?:=(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}))?\]/
+    date_regex = ~r/\[(\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2})?(?:=(\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}))?\]/
 
     case Regex.run(date_regex, comment) do
       [_, actual_str, effective_str] when actual_str != "" and effective_str != "" ->

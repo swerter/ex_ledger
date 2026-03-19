@@ -18,6 +18,9 @@ defmodule ExLedger.Parser.Transaction do
   """
   @spec parse_transaction(String.t()) :: {:ok, Core.transaction()} | {:error, Core.parse_error()}
   def parse_transaction(input) do
+    # Normalize line endings (convert CRLF to LF)
+    input = String.replace(input, "\r\n", "\n")
+
     with :ok <- check_basic_structure(input) do
       case select_transaction_parser(input).(input) do
         {:ok, [transaction], "", _, _, _} ->
@@ -254,7 +257,7 @@ defmodule ExLedger.Parser.Transaction do
   defp check_directive_postings(false, _postings_count, _min_postings), do: nil
 
   defp check_missing_date(false, first_line) do
-    if not Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}/, first_line) do
+    if not Regex.match?(~r/^\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}/, first_line) do
       {:error, :missing_date}
     end
   end
@@ -263,7 +266,7 @@ defmodule ExLedger.Parser.Transaction do
 
   defp check_missing_payee(false, first_line) do
     if not Regex.match?(
-         ~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}(?:=\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})?\s+(?:[*!]\s+)?(?:\([^)]+\)\s+)?(.+)/,
+         ~r/^\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}(?:=\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2})?\s+(?:[*!]\s+)?(?:\([^)]+\)\s+)?(.+)/,
          first_line
        ) do
       {:error, :missing_payee}

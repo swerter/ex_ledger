@@ -820,7 +820,11 @@ defmodule ExLedger.LedgerParserTest do
 
     test "returns error for invalid date" do
       assert {:error, _reason} = LedgerParser.parse_date("invalid")
-      assert {:error, _reason} = LedgerParser.parse_date("2009.10.29")
+      assert {:error, _reason} = LedgerParser.parse_date("10-29-2009")
+    end
+
+    test "parses date with dot separator" do
+      assert {:ok, ~D[2009-10-29]} = LedgerParser.parse_date("2009.10.29")
     end
   end
 

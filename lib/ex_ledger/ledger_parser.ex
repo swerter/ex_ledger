@@ -150,6 +150,9 @@ defmodule ExLedger.LedgerParser do
   end
 
   def parse_ledger(input, opts) when is_binary(input) do
+    # Normalize line endings (convert CRLF to LF)
+    input = String.replace(input, "\r\n", "\n")
+
     base_dir = Keyword.get(opts, :base_dir, ".")
     source_file = Keyword.get(opts, :source_file, nil)
     seen_files = Keyword.get(opts, :seen_files, MapSet.new())
@@ -687,7 +690,7 @@ defmodule ExLedger.LedgerParser do
     starts_with_date?(line) or starts_with_directive?(String.trim_leading(line))
   end
 
-  defp starts_with_date?(line), do: Regex.match?(~r/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}/, line)
+  defp starts_with_date?(line), do: Regex.match?(~r/^\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}/, line)
 
   defp starts_with_directive?(line),
     do: String.starts_with?(line, "=") or String.starts_with?(line, "~")
@@ -712,7 +715,7 @@ defmodule ExLedger.LedgerParser do
   # Price directive: P DATE SYMBOL PRICE
   defp is_price_directive?(trimmed) do
     String.starts_with?(trimmed, "P ") and
-      Regex.match?(~r/^P\s+\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}\s+/, trimmed)
+      Regex.match?(~r/^P\s+\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}\s+/, trimmed)
   end
 
   defp old_style_account_declaration?(trimmed) do

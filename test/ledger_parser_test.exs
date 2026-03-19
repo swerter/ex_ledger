@@ -169,6 +169,25 @@ defmodule ExLedger.LedgerParserTest do
       assert length(transaction.postings) == 2
     end
 
+    test "handles account names starting with digits and containing single spaces" do
+      # Account names like "3 Ertrag:3200 Handelsertrag:3210 Hosting" start with digits
+      # and contain single spaces. Ledger-cli uses 2+ space separator to distinguish
+      # account name from amount. This should NOT trigger insufficient_spacing error.
+      input = """
+      2025-06-03 * Hold release
+          3 Ertrag:3200 Handelsertrag:3210 Hosting    1226.67 USD
+          6 Sonstiger Aufwand:6570 Informatik:Entwicklung:USD
+      """
+
+      transaction = parse_transaction!(input)
+      assert length(transaction.postings) == 2
+      [posting1, posting2] = transaction.postings
+      assert posting1.account == "3 Ertrag:3200 Handelsertrag:3210 Hosting"
+      assert Decimal.eq?(posting1.amount.value, Decimal.new("1226.67"))
+      assert posting1.amount.currency == "USD"
+      assert posting2.account == "6 Sonstiger Aufwand:6570 Informatik:Entwicklung:USD"
+    end
+
     test "handles very long account names with proper spacing" do
       # Long account name similar to real-world ledger files
       # Each currency must balance independently

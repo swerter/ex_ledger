@@ -1,6 +1,7 @@
 defmodule ExLedger.StrictMultiCurrencyBalanceTest do
   use ExUnit.Case
   alias ExLedger.LedgerParser
+  import ExLedger.TransactionHelpers
 
   @moduledoc """
   Tests for multi-currency balance validation.
@@ -102,13 +103,6 @@ defmodule ExLedger.StrictMultiCurrencyBalanceTest do
 
       transaction = parse_transaction!(input)
       assert :ok = LedgerParser.validate_transaction(transaction)
-    end
-  end
-
-  defp parse_transaction!(input) do
-    case LedgerParser.parse_transaction(input) do
-      {:ok, transaction} -> transaction
-      {:error, reason} -> flunk("Expected transaction to parse, got: #{inspect(reason)}")
     end
   end
 end

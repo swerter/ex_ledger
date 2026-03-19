@@ -3,6 +3,7 @@ defmodule ExLedger.LedgerParserTest do
   alias ExLedger.EntryFormatter
   alias ExLedger.LedgerParser
   alias ExLedger.TestHelpers
+  import ExLedger.TransactionHelpers
 
   describe "parse_transaction/1 - structural validation" do
     test "requires date at start of transaction" do
@@ -3910,17 +3911,4 @@ defmodule ExLedger.LedgerParserTest do
     end
   end
 
-  defp parse_transaction!(input) do
-    case LedgerParser.parse_transaction(input) do
-      {:ok, transaction} -> transaction
-      {:error, reason} -> flunk("Expected transaction to parse, got: #{inspect(reason)}")
-    end
-  end
-
-  defp parse_posting!(input) do
-    case LedgerParser.parse_posting(input) do
-      {:ok, posting} -> posting
-      {:error, reason} -> flunk("Expected posting to parse, got: #{inspect(reason)}")
-    end
-  end
 end

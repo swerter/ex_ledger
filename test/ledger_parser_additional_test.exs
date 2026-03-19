@@ -1,6 +1,7 @@
 defmodule ExLedger.LedgerParserAdditionalTest do
   use ExUnit.Case
   import ExUnit.CaptureIO
+  import ExLedger.TransactionHelpers
 
   alias ExLedger.LedgerParser
   alias ExLedger.TestHelpers
@@ -687,64 +688,5 @@ defmodule ExLedger.LedgerParserAdditionalTest do
 
       assert LedgerParser.list_commodities(transactions) == []
     end
-  end
-
-  defp transaction(payee, postings) do
-    %{
-      kind: :regular,
-      date: ~D[2024-01-01],
-      aux_date: nil,
-      state: :uncleared,
-      code: "",
-      payee: payee,
-      comment: nil,
-      predicate: nil,
-      period: nil,
-      postings: postings
-    }
-  end
-
-  defp posting(account, amount, tags) do
-    %{
-      account: account,
-      amount: amount,
-      metadata: %{},
-      tags: tags,
-      comments: []
-    }
-  end
-
-  defp simple_posting(account, value) do
-    posting(account, %{value: Decimal.from_float(value), currency: "$"}, [])
-  end
-
-  defp periodic(period, value) do
-    %{
-      kind: :periodic,
-      date: nil,
-      aux_date: nil,
-      state: :uncleared,
-      code: "",
-      payee: nil,
-      comment: nil,
-      predicate: nil,
-      period: period,
-      postings: [
-        %{
-          account: "Expenses:#{period}",
-          amount: %{value: Decimal.from_float(value), currency: "$"},
-          metadata: %{},
-          tags: [],
-          comments: []
-        },
-        %{
-          account: "Assets:Cash",
-          amount: %{value: Decimal.from_float(-value), currency: "$"},
-          metadata: %{},
-          tags: [],
-          comments: []
-        }
-      ]
-    }
   end
 end

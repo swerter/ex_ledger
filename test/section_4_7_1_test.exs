@@ -3,7 +3,6 @@ defmodule ExLedger.Section471Test do
   Tests for Section 4.7.1 - Transactions and Comments from the Ledger manual.
 
   This covers:
-  - Transaction format with dates, states, codes, payees
   - Comment characters: ; # % | *
   - Price directives: P DATE SYMBOL PRICE
   - Automated transactions: = predicate
@@ -11,204 +10,39 @@ defmodule ExLedger.Section471Test do
   - Virtual postings: (ACCOUNT) and [ACCOUNT]
   - Cost/price syntax: @ AMOUNT and @@ AMOUNT
   - Posting notes with dates: [ACTUAL_DATE] or [=EFFECTIVE_DATE]
+
+  Note: Basic transaction format tests are in ledger_parser_test.exs
   """
 
   use ExUnit.Case
   alias ExLedger.LedgerParser
-
-  # Helper to parse a single transaction
-  defp parse_transaction!(input) do
-    case LedgerParser.parse_transaction(input) do
-      {:ok, transaction} -> transaction
-      {:error, reason} -> raise "Parse failed: #{inspect(reason)}"
-    end
-  end
-
-  # Helper to parse a ledger and return transactions
-  defp parse_ledger!(input) do
-    case LedgerParser.parse_ledger(input) do
-      {:ok, result} -> result.transactions
-      {:error, reason} -> raise "Parse failed: #{inspect(reason)}"
-    end
-  end
-
-  # ==========================================================================
-  # Section: Transaction format
-  # ==========================================================================
-
-  describe "transaction format - DATE[=EDATE] [*|!] [(CODE)] DESC" do
-    test "parses basic transaction with date and payee" do
-      input = """
-      2024/01/15 Grocery Store
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
-
-      txn = parse_transaction!(input)
-      assert txn.date == ~D[2024-01-15]
-      assert txn.payee == "Grocery Store"
-      assert txn.state == :uncleared
-      assert txn.code == ""
-    end
-
-    test "parses transaction with effective date (=EDATE)" do
-      input = """
-      2024/01/15=2024/01/20 Grocery Store
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
-
-      txn = parse_transaction!(input)
-      assert txn.date == ~D[2024-01-15]
-      assert txn.aux_date == ~D[2024-01-20]
-      assert txn.payee == "Grocery Store"
-    end
-
-    test "parses cleared transaction (*)" do
-      input = """
-      2024/01/15 * Grocery Store
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
-
-      txn = parse_transaction!(input)
-      assert txn.state == :cleared
-      assert txn.payee == "Grocery Store"
-    end
-
-    test "parses pending transaction (!)" do
-      input = """
-      2024/01/15 ! Grocery Store
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
-
-      txn = parse_transaction!(input)
-      assert txn.state == :pending
-      assert txn.payee == "Grocery Store"
-    end
-
-    test "parses transaction with code" do
-      input = """
-      2024/01/15 (CHK123) Grocery Store
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
-
-      txn = parse_transaction!(input)
-      assert txn.code == "CHK123"
-      assert txn.payee == "Grocery Store"
-    end
-
-    test "parses transaction with state and code" do
-      input = """
-      2024/01/15 * (CHK123) Grocery Store
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
-
-      txn = parse_transaction!(input)
-      assert txn.state == :cleared
-      assert txn.code == "CHK123"
-      assert txn.payee == "Grocery Store"
-    end
-
-    test "parses transaction with effective date, state, and code" do
-      input = """
-      2024/01/15=2024/01/20 * (CHK123) Grocery Store
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
-
-      txn = parse_transaction!(input)
-      assert txn.date == ~D[2024-01-15]
-      assert txn.aux_date == ~D[2024-01-20]
-      assert txn.state == :cleared
-      assert txn.code == "CHK123"
-      assert txn.payee == "Grocery Store"
-    end
-
-    test "parses transaction with inline comment" do
-      input = """
-      2024/01/15 Grocery Store  ; weekly shopping
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
-
-      txn = parse_transaction!(input)
-      assert txn.payee == "Grocery Store"
-      assert txn.comment == "weekly shopping"
-    end
-  end
+  import ExLedger.TransactionHelpers
 
   # ==========================================================================
   # Section: Comment characters
   # ==========================================================================
 
   describe "comment characters - ; # % | *" do
-    test "semicolon comment is ignored at top level" do
-      input = """
-      ; This is a comment
-      2024/01/15 Grocery Store
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
+    # Parameterized tests for each comment character
+    for {char, name} <- [
+          {";", "semicolon"},
+          {"#", "pound/hash"},
+          {"%", "percent"},
+          {"|", "pipe/bar"},
+          {"*", "asterisk"}
+        ] do
+      test "#{name} comment is ignored at top level" do
+        input = """
+        #{unquote(char)} This is a comment
+        2024/01/15 Grocery Store
+            Expenses:Food  $25.00
+            Assets:Cash
+        """
 
-      transactions = parse_ledger!(input)
-      assert length(transactions) == 1
-      assert hd(transactions).payee == "Grocery Store"
-    end
-
-    test "pound/hash comment is ignored at top level" do
-      input = """
-      # This is a comment
-      2024/01/15 Grocery Store
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
-
-      transactions = parse_ledger!(input)
-      assert length(transactions) == 1
-      assert hd(transactions).payee == "Grocery Store"
-    end
-
-    test "percent comment is ignored at top level" do
-      input = """
-      % This is a comment
-      2024/01/15 Grocery Store
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
-
-      transactions = parse_ledger!(input)
-      assert length(transactions) == 1
-      assert hd(transactions).payee == "Grocery Store"
-    end
-
-    test "pipe/bar comment is ignored at top level" do
-      input = """
-      | This is a comment
-      2024/01/15 Grocery Store
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
-
-      transactions = parse_ledger!(input)
-      assert length(transactions) == 1
-      assert hd(transactions).payee == "Grocery Store"
-    end
-
-    test "asterisk comment is ignored at top level" do
-      input = """
-      * This is a comment
-      2024/01/15 Grocery Store
-          Expenses:Food  $25.00
-          Assets:Cash
-      """
-
-      transactions = parse_ledger!(input)
-      assert length(transactions) == 1
-      assert hd(transactions).payee == "Grocery Store"
+        transactions = parse_ledger!(input)
+        assert length(transactions) == 1
+        assert hd(transactions).payee == "Grocery Store"
+      end
     end
 
     test "multiple different comment types are all ignored" do

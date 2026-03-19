@@ -18,7 +18,7 @@ defmodule ExLedger.PriceExchangeTest do
       [price] = prices
       assert price.date == ~D[2026-01-15]
       assert price.commodity == "EUR"
-      assert price.price.value == 0.9432
+      assert Decimal.eq?(price.price.value, Decimal.new("0.9432"))
       assert price.price.currency == "CHF"
     end
 
@@ -51,7 +51,7 @@ defmodule ExLedger.PriceExchangeTest do
       [price] = Price.extract_price_directives(input)
 
       assert price.commodity == "AAPL"
-      assert price.price.value == 150.0
+      assert Decimal.eq?(price.price.value, Decimal.from_float(150.0))
       assert price.price.currency == "$"
     end
 
@@ -88,8 +88,8 @@ defmodule ExLedger.PriceExchangeTest do
   describe "Price.build_price_db/1" do
     test "builds price database indexed by currency pair" do
       prices = [
-        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: 0.9432, currency: "CHF"}},
-        %{date: ~D[2026-02-01], commodity: "EUR", price: %{value: 0.9455, currency: "CHF"}}
+        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: Decimal.new("0.9432"), currency: "CHF"}},
+        %{date: ~D[2026-02-01], commodity: "EUR", price: %{value: Decimal.new("0.9455"), currency: "CHF"}}
       ]
 
       db = Price.build_price_db(prices)
@@ -98,14 +98,18 @@ defmodule ExLedger.PriceExchangeTest do
       entries = db[{"EUR", "CHF"}]
       # Should be sorted by date descending
       assert length(entries) == 2
-      assert Enum.at(entries, 0) == {~D[2026-02-01], 0.9455}
-      assert Enum.at(entries, 1) == {~D[2026-01-15], 0.9432}
+      {date1, value1} = Enum.at(entries, 0)
+      {date2, value2} = Enum.at(entries, 1)
+      assert date1 == ~D[2026-02-01]
+      assert Decimal.eq?(value1, Decimal.new("0.9455"))
+      assert date2 == ~D[2026-01-15]
+      assert Decimal.eq?(value2, Decimal.new("0.9432"))
     end
 
     test "groups multiple currency pairs" do
       prices = [
-        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: 0.9432, currency: "CHF"}},
-        %{date: ~D[2026-01-15], commodity: "USD", price: %{value: 0.8821, currency: "CHF"}}
+        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: Decimal.new("0.9432"), currency: "CHF"}},
+        %{date: ~D[2026-01-15], commodity: "USD", price: %{value: Decimal.new("0.8821"), currency: "CHF"}}
       ]
 
       db = Price.build_price_db(prices)
@@ -118,9 +122,9 @@ defmodule ExLedger.PriceExchangeTest do
   describe "Price.lookup_price/4" do
     setup do
       prices = [
-        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: 0.9432, currency: "CHF"}},
-        %{date: ~D[2026-02-01], commodity: "EUR", price: %{value: 0.9455, currency: "CHF"}},
-        %{date: ~D[2026-01-15], commodity: "USD", price: %{value: 0.8821, currency: "CHF"}}
+        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: Decimal.new("0.9432"), currency: "CHF"}},
+        %{date: ~D[2026-02-01], commodity: "EUR", price: %{value: Decimal.new("0.9455"), currency: "CHF"}},
+        %{date: ~D[2026-01-15], commodity: "USD", price: %{value: Decimal.new("0.8821"), currency: "CHF"}}
       ]
 
       db = Price.build_price_db(prices)
@@ -128,16 +132,19 @@ defmodule ExLedger.PriceExchangeTest do
     end
 
     test "returns price for exact date match", %{db: db} do
-      assert {:ok, 0.9432} = Price.lookup_price("EUR", "CHF", ~D[2026-01-15], db)
+      {:ok, rate} = Price.lookup_price("EUR", "CHF", ~D[2026-01-15], db)
+      assert Decimal.eq?(rate, Decimal.new("0.9432"))
     end
 
     test "returns most recent price on or before date", %{db: db} do
       # Date between Jan 15 and Feb 1 should return Jan 15 price
-      assert {:ok, 0.9432} = Price.lookup_price("EUR", "CHF", ~D[2026-01-20], db)
+      {:ok, rate} = Price.lookup_price("EUR", "CHF", ~D[2026-01-20], db)
+      assert Decimal.eq?(rate, Decimal.new("0.9432"))
     end
 
     test "returns latest price for date after all prices", %{db: db} do
-      assert {:ok, 0.9455} = Price.lookup_price("EUR", "CHF", ~D[2026-03-01], db)
+      {:ok, rate} = Price.lookup_price("EUR", "CHF", ~D[2026-03-01], db)
+      assert Decimal.eq?(rate, Decimal.new("0.9455"))
     end
 
     test "returns error for date before any price", %{db: db} do
@@ -152,8 +159,8 @@ defmodule ExLedger.PriceExchangeTest do
   describe "Exchange.convert_value/5" do
     setup do
       prices = [
-        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: 0.9432, currency: "CHF"}},
-        %{date: ~D[2026-01-15], commodity: "USD", price: %{value: 0.8821, currency: "CHF"}}
+        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: Decimal.new("0.9432"), currency: "CHF"}},
+        %{date: ~D[2026-01-15], commodity: "USD", price: %{value: Decimal.new("0.8821"), currency: "CHF"}}
       ]
 
       db = Price.build_price_db(prices)
@@ -161,19 +168,22 @@ defmodule ExLedger.PriceExchangeTest do
     end
 
     test "converts value using direct price", %{db: db} do
-      {:ok, result} = Exchange.convert_value(100.0, "EUR", "CHF", ~D[2026-01-15], db)
-      assert_in_delta result, 94.32, 0.01
+      {:ok, result} = Exchange.convert_value(Decimal.new(100), "EUR", "CHF", ~D[2026-01-15], db)
+      # 100 * 0.9432 = 94.32
+      assert Decimal.compare(result, Decimal.new("94")) == :gt
+      assert Decimal.compare(result, Decimal.new("95")) == :lt
     end
 
     test "converts value using inverse price", %{db: db} do
-      {:ok, result} = Exchange.convert_value(100.0, "CHF", "EUR", ~D[2026-01-15], db)
+      {:ok, result} = Exchange.convert_value(Decimal.new(100), "CHF", "EUR", ~D[2026-01-15], db)
       # 100 / 0.9432 = ~106.02
-      assert_in_delta result, 106.02, 0.1
+      assert Decimal.compare(result, Decimal.new("105")) == :gt
+      assert Decimal.compare(result, Decimal.new("107")) == :lt
     end
 
     test "returns error for no conversion path", %{db: db} do
       assert {:error, {:no_conversion_path, "GBP", "CHF"}} =
-               Exchange.convert_value(100.0, "GBP", "CHF", ~D[2026-01-15], db)
+               Exchange.convert_value(Decimal.new(100), "GBP", "CHF", ~D[2026-01-15], db)
     end
   end
 
@@ -181,8 +191,8 @@ defmodule ExLedger.PriceExchangeTest do
     setup do
       # EUR -> USD, USD -> CHF but no direct EUR -> CHF
       prices = [
-        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: 1.10, currency: "USD"}},
-        %{date: ~D[2026-01-15], commodity: "USD", price: %{value: 0.88, currency: "CHF"}}
+        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: Decimal.new("1.10"), currency: "USD"}},
+        %{date: ~D[2026-01-15], commodity: "USD", price: %{value: Decimal.new("0.88"), currency: "CHF"}}
       ]
 
       db = Price.build_price_db(prices)
@@ -190,16 +200,17 @@ defmodule ExLedger.PriceExchangeTest do
     end
 
     test "converts through intermediate currency", %{db: db} do
-      {:ok, result} = Exchange.convert_value(100.0, "EUR", "CHF", ~D[2026-01-15], db)
+      {:ok, result} = Exchange.convert_value(Decimal.new(100), "EUR", "CHF", ~D[2026-01-15], db)
       # 100 EUR * 1.10 USD/EUR * 0.88 CHF/USD = 96.8 CHF
-      assert_in_delta result, 96.8, 0.1
+      assert Decimal.compare(result, Decimal.new("96")) == :gt
+      assert Decimal.compare(result, Decimal.new("98")) == :lt
     end
   end
 
   describe "Exchange.exchange/3" do
     setup do
       prices = [
-        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: 0.9432, currency: "CHF"}}
+        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: Decimal.new("0.9432"), currency: "CHF"}}
       ]
 
       db = Price.build_price_db(prices)
@@ -211,8 +222,8 @@ defmodule ExLedger.PriceExchangeTest do
         %{
           date: ~D[2026-01-15],
           postings: [
-            %{account: "Expenses:Office", amount: %{value: 85.0, currency: "EUR", currency_position: :leading}},
-            %{account: "Assets:Bank", amount: %{value: -85.0, currency: "EUR", currency_position: :leading}}
+            %{account: "Expenses:Office", amount: %{value: Decimal.new(85), currency: "EUR", currency_position: :leading}},
+            %{account: "Assets:Bank", amount: %{value: Decimal.new(-85), currency: "EUR", currency_position: :leading}}
           ]
         }
       ]
@@ -221,9 +232,10 @@ defmodule ExLedger.PriceExchangeTest do
 
       [posting1, posting2] = converted.postings
       assert posting1.amount.currency == "CHF"
-      assert_in_delta posting1.amount.value, 80.17, 0.1
+      # 85 * 0.9432 = ~80.17
+      assert Decimal.compare(posting1.amount.value, Decimal.new("79")) == :gt
+      assert Decimal.compare(posting1.amount.value, Decimal.new("81")) == :lt
       assert posting2.amount.currency == "CHF"
-      assert_in_delta posting2.amount.value, -80.17, 0.1
     end
 
     test "leaves amounts without currency unchanged", %{db: db} do
@@ -231,7 +243,7 @@ defmodule ExLedger.PriceExchangeTest do
         %{
           date: ~D[2026-01-15],
           postings: [
-            %{account: "Expenses:Office", amount: %{value: 85.0, currency: nil, currency_position: nil}},
+            %{account: "Expenses:Office", amount: %{value: Decimal.new(85), currency: nil, currency_position: nil}},
             %{account: "Assets:Bank", amount: nil}
           ]
         }
@@ -249,7 +261,7 @@ defmodule ExLedger.PriceExchangeTest do
         %{
           date: ~D[2026-01-15],
           postings: [
-            %{account: "Expenses:Office", amount: %{value: 100.0, currency: "CHF", currency_position: :leading}}
+            %{account: "Expenses:Office", amount: %{value: Decimal.new(100), currency: "CHF", currency_position: :leading}}
           ]
         }
       ]
@@ -258,16 +270,16 @@ defmodule ExLedger.PriceExchangeTest do
 
       [posting] = converted.postings
       assert posting.amount.currency == "CHF"
-      assert posting.amount.value == 100.0
+      assert Decimal.eq?(posting.amount.value, Decimal.new(100))
     end
   end
 
   describe "Exchange.convertible_currencies/3" do
     test "returns currencies that can be converted to target" do
       prices = [
-        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: 0.9432, currency: "CHF"}},
-        %{date: ~D[2026-01-15], commodity: "USD", price: %{value: 0.8821, currency: "CHF"}},
-        %{date: ~D[2026-01-15], commodity: "GBP", price: %{value: 1.15, currency: "EUR"}}
+        %{date: ~D[2026-01-15], commodity: "EUR", price: %{value: Decimal.new("0.9432"), currency: "CHF"}},
+        %{date: ~D[2026-01-15], commodity: "USD", price: %{value: Decimal.new("0.8821"), currency: "CHF"}},
+        %{date: ~D[2026-01-15], commodity: "GBP", price: %{value: Decimal.new("1.15"), currency: "EUR"}}
       ]
 
       db = Price.build_price_db(prices)

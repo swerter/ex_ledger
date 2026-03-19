@@ -63,7 +63,7 @@ defmodule ExLedger.BalanceMultiCurrencyTest do
       chf_amount = Enum.find(assets_balance, fn a -> a.currency == "CHF" end)
       usd_amount = Enum.find(assets_balance, fn a -> a.currency == "USD" end)
 
-      assert chf_amount.amount == 90.0, """
+      assert Decimal.eq?(chf_amount.amount, Decimal.from_float(90.0)), """
       Expected CHF balance to be 90.0 but got #{inspect(chf_amount)}
 
       Full balance: #{inspect(assets_balance)}
@@ -73,7 +73,7 @@ defmodule ExLedger.BalanceMultiCurrencyTest do
         ./bin/exledger -f test/fixtures/currency_conversion.ledger balance
       """
 
-      assert usd_amount.amount == 0.0, """
+      assert Decimal.eq?(usd_amount.amount, Decimal.new(0)), """
       Expected USD balance to be 0.0 but got #{inspect(usd_amount)}
 
       After the conversion transaction, USD should net to zero.

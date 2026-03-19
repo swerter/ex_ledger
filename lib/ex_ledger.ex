@@ -6,6 +6,7 @@ defmodule ExLedger do
   """
 
   alias ExLedger.LedgerParser
+  import ExLedger.Parser.Helpers, only: [ensure_two_decimals: 1]
 
   @month_names ~w(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)
 
@@ -29,7 +30,7 @@ defmodule ExLedger do
   end
 
   @doc """
-  Formats a float amount into ledger format with currency symbol and 2 decimal places.
+  Formats an amount into ledger format with currency symbol and 2 decimal places.
 
   ## Examples
 
@@ -42,14 +43,18 @@ defmodule ExLedger do
       iex> ExLedger.format_amount(20.00)
       "   $20.00"
   """
-  @spec format_amount(number()) :: String.t()
-  def format_amount(amount) when is_float(amount) or is_integer(amount) do
-    normalized_amount = amount * 1.0
-    sign = if normalized_amount < 0, do: "-", else: ""
-    abs_amount = abs(normalized_amount)
-
-    formatted = :erlang.float_to_binary(abs_amount, decimals: 2)
+  @spec format_amount(Decimal.t() | number()) :: String.t()
+  def format_amount(%Decimal{} = amount) do
+    sign = if Decimal.negative?(amount), do: "-", else: ""
+    abs_amount = Decimal.abs(amount)
+    formatted = abs_amount |> Decimal.round(2) |> Decimal.to_string(:normal)
+    # Ensure we always have 2 decimal places
+    formatted = ensure_two_decimals(formatted)
     String.pad_leading("#{sign}$#{formatted}", 9)
+  end
+
+  def format_amount(amount) when is_float(amount) or is_integer(amount) do
+    format_amount(Decimal.from_float(amount * 1.0))
   end
 
   @doc """

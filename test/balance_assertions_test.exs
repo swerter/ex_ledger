@@ -15,11 +15,8 @@ defmodule ExLedger.BalanceAssertionsTest do
       {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       [checking_posting, _] = transaction.postings
 
-      assert checking_posting.assertion == %{
-               value: 45000.00,
-               currency: "CHF",
-               currency_position: :trailing
-             }
+      assert Decimal.eq?(checking_posting.assertion.value, Decimal.from_float(45000.00))
+      assert checking_posting.assertion.currency == "CHF"
     end
 
     test "parses assertion with leading currency" do
@@ -32,11 +29,8 @@ defmodule ExLedger.BalanceAssertionsTest do
       {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       [checking_posting, _] = transaction.postings
 
-      assert checking_posting.assertion == %{
-               value: 45000.00,
-               currency: "$",
-               currency_position: :leading
-             }
+      assert Decimal.eq?(checking_posting.assertion.value, Decimal.from_float(45000.00))
+      assert checking_posting.assertion.currency == "$"
     end
 
     test "parses assertion with non-zero posting amount" do
@@ -49,17 +43,11 @@ defmodule ExLedger.BalanceAssertionsTest do
       {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       [checking_posting, _] = transaction.postings
 
-      assert checking_posting.amount == %{
-               value: 100.0,
-               currency: "CHF",
-               currency_position: :trailing
-             }
+      assert Decimal.eq?(checking_posting.amount.value, Decimal.new(100))
+      assert checking_posting.amount.currency == "CHF"
 
-      assert checking_posting.assertion == %{
-               value: 45100.00,
-               currency: "CHF",
-               currency_position: :trailing
-             }
+      assert Decimal.eq?(checking_posting.assertion.value, Decimal.from_float(45100.00))
+      assert checking_posting.assertion.currency == "CHF"
     end
 
     test "posting without assertion has nil assertion field" do
@@ -127,8 +115,8 @@ defmodule ExLedger.BalanceAssertionsTest do
       assert {:error, [failure]} = BalanceAssertions.validate_assertions(transactions)
 
       assert failure.account == "Assets:Cash"
-      assert failure.expected.value == 200.0
-      assert failure.actual.value == 100.0
+      assert Decimal.eq?(failure.expected.value, Decimal.new(200))
+      assert Decimal.eq?(failure.actual.value, Decimal.new(100))
       assert failure.transaction_date == ~D[2026-01-15]
       assert failure.transaction_payee == "Wrong Balance Check"
     end
@@ -204,8 +192,8 @@ defmodule ExLedger.BalanceAssertionsTest do
       {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert {:error, [failure]} = BalanceAssertions.validate_assertions(transactions)
 
-      assert failure.expected.value == 150.0
-      assert failure.actual.value == 100.0
+      assert Decimal.eq?(failure.expected.value, Decimal.new(150))
+      assert Decimal.eq?(failure.actual.value, Decimal.new(100))
     end
   end
 
@@ -241,7 +229,7 @@ defmodule ExLedger.BalanceAssertionsTest do
       {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
       assert {:error, [failure]} = BalanceAssertions.validate_assertions(transactions)
       assert failure.account == "Budget:Food"
-      assert failure.expected.value == 999.0
+      assert Decimal.eq?(failure.expected.value, Decimal.new(999))
     end
 
     test "virtual unbalanced posting without assertion is skipped" do

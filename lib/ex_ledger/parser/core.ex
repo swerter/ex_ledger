@@ -8,7 +8,7 @@ defmodule ExLedger.Parser.Core do
   import NimbleParsec
 
   @type amount :: %{
-          value: float(),
+          value: Decimal.t(),
           currency: String.t() | nil,
           currency_position: :leading | :trailing | nil
         }
@@ -546,7 +546,6 @@ defmodule ExLedger.Parser.Core do
   @spec to_amount(keyword()) :: amount()
   defp to_amount(parts) do
     has_negative = Enum.member?(parts, :negative)
-    sign = if has_negative, do: -1, else: 1
 
     currency =
       parts
@@ -557,20 +556,17 @@ defmodule ExLedger.Parser.Core do
       end)
 
     integer_part = Keyword.get(parts, :integer_part, 0)
+    decimal_string = Keyword.get(parts, :decimal_string)
 
-    decimal_value =
-      case Keyword.get(parts, :decimal_string) do
-        nil ->
-          0.0
-
-        decimal_string ->
-          num_digits = String.length(decimal_string)
-          decimal_int = String.to_integer(decimal_string)
-          divisor = :math.pow(10, num_digits)
-          decimal_int / divisor
+    # Build the decimal string representation
+    value_string =
+      case decimal_string do
+        nil -> Integer.to_string(integer_part)
+        _ -> "#{integer_part}.#{decimal_string}"
       end
 
-    value = sign * (integer_part + decimal_value)
+    value_string = if has_negative, do: "-" <> value_string, else: value_string
+    value = Decimal.new(value_string)
     currency_position = Keyword.get(parts, :currency_position)
 
     %{value: value, currency: currency, currency_position: currency_position}

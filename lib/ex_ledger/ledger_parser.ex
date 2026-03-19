@@ -10,6 +10,7 @@ defmodule ExLedger.LedgerParser do
   alias ExLedger.Exchange
   alias ExLedger.ParseContext
   alias ExLedger.Parser.{Accounts, BalanceAssertions, Core, Declarations, Helpers, Price, Timeclock, Transaction}
+  import Helpers, only: [to_decimal: 1]
 
   # Re-export types from Core
   @type amount :: Core.amount()
@@ -318,12 +319,7 @@ defmodule ExLedger.LedgerParser do
         new_import_chain =
           build_import_chain(context.source_file, line_number, context.import_chain)
 
-        # Reject absolute paths immediately
-        with :ok <- check_relative_path(filename),
-             include_path = resolve_include_path(filename, context.base_dir),
-             :ok <- path_within_base?(include_path, context.base_dir, filename),
-             :ok <- check_file_exists(include_path, filename),
-             :ok <- check_circular_include(include_path, context.seen_files, filename),
+        with {:ok, include_path} <- validate_include_path(filename, context),
              {:ok, content} <- File.read(include_path) do
           included_accounts = Accounts.extract_account_declarations(content)
           new_accounts = Map.merge(context.accounts, included_accounts)
@@ -373,17 +369,24 @@ defmodule ExLedger.LedgerParser do
         new_import_chain =
           build_import_chain(context.source_file, line_number, context.import_chain)
 
-        # Reject absolute paths immediately
-        with :ok <- check_relative_path(filename),
-             include_path = resolve_include_path(filename, context.base_dir),
-             :ok <- path_within_base?(include_path, context.base_dir, filename),
-             :ok <- check_file_exists(include_path, filename),
-             :ok <- check_circular_include(include_path, context.seen_files, filename) do
+        with {:ok, include_path} <- validate_include_path(filename, context) do
           process_included_content(include_path, context, new_import_chain, acc)
         end
 
       {:error, _} = error ->
         error
+    end
+  end
+
+  # Validates an include path: checks it's relative, within base directory,
+  # exists, and is not circular.
+  defp validate_include_path(filename, context) do
+    with :ok <- check_relative_path(filename),
+         include_path = resolve_include_path(filename, context.base_dir),
+         :ok <- path_within_base?(include_path, context.base_dir, filename),
+         :ok <- check_file_exists(include_path, filename),
+         :ok <- check_circular_include(include_path, context.seen_files, filename) do
+      {:ok, include_path}
     end
   end
 
@@ -403,19 +406,30 @@ defmodule ExLedger.LedgerParser do
     end
   end
 
+  # Maximum symlink resolution depth (matches Linux MAXSYMLINKS)
+  @max_symlink_depth 40
+
   defp resolve_include_path(filename, base_dir) do
     path = Path.join(base_dir, filename)
-    resolve_symlinks(path)
+    resolve_symlinks(path, @max_symlink_depth)
   end
 
-  defp resolve_symlinks(path) do
+  defp resolve_symlinks(path, depth) when depth <= 0 do
+    # Circular symlink or excessive nesting - return expanded path as-is
+    Path.expand(path)
+  end
+
+  defp resolve_symlinks(path, depth) do
     case File.read_link(path) do
       {:ok, target} ->
-        if Path.type(target) == :absolute do
-          resolve_symlinks(target)
-        else
-          path |> Path.dirname() |> Path.join(target) |> Path.expand() |> resolve_symlinks()
-        end
+        next_path =
+          if Path.type(target) == :absolute do
+            target
+          else
+            path |> Path.dirname() |> Path.join(target) |> Path.expand()
+          end
+
+        resolve_symlinks(next_path, depth - 1)
 
       {:error, _} ->
         Path.expand(path)
@@ -450,7 +464,12 @@ defmodule ExLedger.LedgerParser do
     expanded_base = Path.expand(base_dir)
     expanded_path = Path.expand(path)
 
-    if String.starts_with?(expanded_path, expanded_base) do
+    # Must check for path separator to prevent /home/user matching /home/user-evil
+    within_base? =
+      expanded_path == expanded_base or
+        String.starts_with?(expanded_path, expanded_base <> "/")
+
+    if within_base? do
       :ok
     else
       {:error, {:include_outside_base, filename}}
@@ -729,12 +748,13 @@ defmodule ExLedger.LedgerParser do
           date: transaction.date,
           description: transaction.payee,
           account: posting.account,
-          amount: posting.amount.value
+          amount: to_decimal(posting.amount.value)
         }
       end)
     end)
-    |> Enum.reduce({[], 0.0}, fn posting, {acc, balance} ->
-      new_balance = balance + posting.amount
+    |> Enum.reduce({[], Decimal.new(0)}, fn posting, {acc, balance} ->
+      amount = to_decimal(posting.amount)
+      new_balance = Decimal.add(balance, amount)
       posting_with_balance = Map.put(posting, :balance, new_balance)
       {[posting_with_balance | acc], new_balance}
     end)
@@ -758,10 +778,10 @@ defmodule ExLedger.LedgerParser do
 
     {entries, _balances} =
       Enum.map_reduce(filtered, %{}, fn posting, balances ->
-        amount = posting.amount || %{value: 0.0, currency: nil}
+        amount = posting.amount || %{value: Decimal.new(0), currency: nil}
         currency = Map.get(amount, :currency)
         key = {posting.account, currency}
-        new_balance = Map.get(balances, key, 0.0) + amount.value
+        new_balance = Decimal.add(Map.get(balances, key, Decimal.new(0)), amount.value)
         entry = Map.put(posting, :balance, %{value: new_balance, currency: currency})
         {entry, Map.put(balances, key, new_balance)}
       end)
@@ -825,6 +845,10 @@ defmodule ExLedger.LedgerParser do
     |> String.pad_leading(9)
   end
 
+  defp format_register_amount(%Decimal{} = value) do
+    format_amount_for_currency(value, nil) |> String.pad_leading(9)
+  end
+
   defp format_register_amount(value) when is_integer(value) or is_float(value) do
     ExLedger.format_amount(value)
   end
@@ -848,7 +872,11 @@ defmodule ExLedger.LedgerParser do
         postings
         |> Enum.group_by(fn posting -> posting.amount.currency end)
         |> Enum.map(fn {currency, currency_postings} ->
-          total = currency_postings |> Enum.map(& &1.amount.value) |> Enum.sum()
+          total =
+            currency_postings
+            |> Enum.map(&to_decimal(&1.amount.value))
+            |> Enum.reduce(Decimal.new(0), &Decimal.add/2)
+
           %{amount: total, currency: currency}
         end)
         |> Enum.sort_by(& &1.currency)
@@ -989,8 +1017,10 @@ defmodule ExLedger.LedgerParser do
   end
 
   defp update_account_summary(accounts, account_name, currency, value) do
+    value = to_decimal(value)
+
     Map.update(accounts, account_name, %{amounts: %{currency => value}}, fn summary ->
-      updated_amounts = Map.update(summary.amounts, currency, value, &(&1 + value))
+      updated_amounts = Map.update(summary.amounts, currency, value, &Decimal.add(&1, value))
       %{summary | amounts: updated_amounts}
     end)
   end
@@ -1023,7 +1053,11 @@ defmodule ExLedger.LedgerParser do
     should_show = direct? or length(children) > 1 or show_parents
 
     %{amounts: amounts} = Map.get(summaries, account, %{amounts: %{}})
-    has_non_zero_balance = Enum.any?(amounts, fn {_currency, value} -> abs(value) >= 0.01 end)
+    zero = Decimal.new(0)
+
+    has_non_zero_balance =
+      Enum.any?(amounts, fn {_currency, value} -> not Decimal.eq?(to_decimal(value), zero) end)
+
     should_render = (has_non_zero_balance or show_empty) and should_show
 
     lines =
@@ -1053,12 +1087,14 @@ defmodule ExLedger.LedgerParser do
 
   defp render_account_lines(account, summaries, visible_depth, show_empty) do
     %{amounts: amounts} = Map.get(summaries, account, %{amounts: %{}})
+    zero = Decimal.new(0)
 
     filtered_amounts =
       if show_empty do
         amounts
       else
-        Enum.filter(amounts, fn {_currency, value} -> abs(value) >= 0.01 end) |> Map.new()
+        Enum.filter(amounts, fn {_currency, value} -> not Decimal.eq?(to_decimal(value), zero) end)
+        |> Map.new()
       end
 
     currencies = Enum.sort(Map.keys(filtered_amounts))
@@ -1066,7 +1102,7 @@ defmodule ExLedger.LedgerParser do
 
     Enum.with_index(currencies)
     |> Enum.map(fn {currency, idx} ->
-      value = Map.get(filtered_amounts, currency, 0)
+      value = Map.get(filtered_amounts, currency, zero)
       amount_str = format_amount_for_currency(value, currency)
       padded_amount = String.pad_leading(amount_str, 20)
 
@@ -1092,15 +1128,17 @@ defmodule ExLedger.LedgerParser do
       balances
       |> Enum.reduce(%{}, fn {_account, amounts_list}, acc ->
         Enum.reduce(amounts_list, acc, fn %{amount: value, currency: currency}, acc_inner ->
-          Map.update(acc_inner, currency, value, &(&1 + value))
+          value = to_decimal(value)
+          Map.update(acc_inner, currency, value, &Decimal.add(&1, value))
         end)
       end)
 
     separator = String.duplicate("-", 20) <> "\n"
+    zero = Decimal.new(0)
 
     if map_size(currency_totals) == 1 do
       [{currency, total}] = Map.to_list(currency_totals)
-      normalized_total = if abs(total) < 0.005, do: 0.0, else: total
+      normalized_total = if Decimal.eq?(total, zero), do: zero, else: total
       amount_str = format_amount_for_currency(normalized_total, currency)
       separator <> String.pad_leading(amount_str, 20) <> "\n"
     else
@@ -1172,7 +1210,7 @@ defmodule ExLedger.LedgerParser do
   defp update_account_currency_period(acc, account, currency, label, amount) do
     Map.update(acc, account, %{currency => %{label => amount}}, fn currencies ->
       Map.update(currencies, currency, %{label => amount}, fn amounts ->
-        Map.update(amounts, label, amount, &(&1 + amount))
+        Map.update(amounts, label, amount, &Decimal.add(&1, amount))
       end)
     end)
   end
@@ -1186,17 +1224,21 @@ defmodule ExLedger.LedgerParser do
   end
 
   defp build_currency_rows_for_account(account, currency_map, period_labels, show_empty) do
+    zero = Decimal.new(0)
+
     currency_map
     |> Enum.sort_by(fn {currency, _} -> currency end)
     |> Enum.reduce([], fn {currency, amounts_map}, acc ->
-      amounts = Enum.map(period_labels, &Map.get(amounts_map, &1, 0.0))
+      amounts = Enum.map(period_labels, &Map.get(amounts_map, &1, zero))
       maybe_add_currency_row(acc, account, currency, amounts, show_empty)
     end)
     |> Enum.reverse()
   end
 
   defp maybe_add_currency_row(acc, account, currency, amounts, show_empty) do
-    if show_empty or Enum.any?(amounts, fn value -> abs(value) >= 0.01 end) do
+    zero = Decimal.new(0)
+
+    if show_empty or Enum.any?(amounts, fn value -> not Decimal.eq?(value, zero) end) do
       formatted = Enum.map(amounts, &format_amount_for_currency(&1, currency))
       [%{account: account, currency: currency, amounts: amounts, formatted: formatted} | acc]
     else
@@ -1271,10 +1313,13 @@ defmodule ExLedger.LedgerParser do
   end
 
   defp update_currency_total(acc, currency, amount, idx, period_labels) do
-    initial = List.duplicate(0.0, length(period_labels)) |> List.update_at(idx, &(&1 + amount))
+    zero = Decimal.new(0)
+
+    initial =
+      List.duplicate(zero, length(period_labels)) |> List.update_at(idx, &Decimal.add(&1, amount))
 
     Map.update(acc, currency, initial, fn totals ->
-      List.update_at(totals, idx, &(&1 + amount))
+      List.update_at(totals, idx, &Decimal.add(&1, amount))
     end)
   end
 
@@ -1380,7 +1425,9 @@ defmodule ExLedger.LedgerParser do
       (amounts_list1 ++ amounts_list2)
       |> Enum.group_by(& &1.currency)
       |> Enum.map(fn {currency, amounts} ->
-        total = amounts |> Enum.map(& &1.amount) |> Enum.sum()
+        total =
+          amounts |> Enum.map(& &1.amount) |> Enum.reduce(Decimal.new(0), &Decimal.add/2)
+
         %{amount: total, currency: currency}
       end)
       |> Enum.sort_by(& &1.currency)
@@ -1719,6 +1766,12 @@ defmodule ExLedger.LedgerParser do
     end
   end
 
+  # Note: User-supplied regex patterns have ReDoS (catastrophic backtracking) potential.
+  # The 256 character limit provides some mitigation, but patterns like (a+)+ can still
+  # cause exponential backtracking. For production use with untrusted input, consider:
+  # - Using a regex timeout via NIF wrapper
+  # - Pattern complexity analysis before compilation
+  # - Running regex matching in a supervised process with timeout
   defp compile_regex(source) do
     if String.length(source) > 256 do
       {:error, :invalid_regex}
@@ -1756,15 +1809,16 @@ defmodule ExLedger.LedgerParser do
         (Map.keys(account_budget) ++ Map.keys(account_actual)) |> Enum.uniq() |> Enum.sort()
 
       Enum.map(currencies, fn currency ->
-        budget_value = Map.get(account_budget, currency, 0.0)
-        actual_value = Map.get(account_actual, currency, 0.0)
+        zero = Decimal.new(0)
+        budget_value = Map.get(account_budget, currency, zero) |> to_decimal()
+        actual_value = Map.get(account_actual, currency, zero) |> to_decimal()
 
         %{
           account: account,
           currency: currency,
           actual: actual_value,
           budget: budget_value,
-          remaining: budget_value - actual_value
+          remaining: Decimal.sub(budget_value, actual_value)
         }
       end)
     end)
@@ -1799,7 +1853,9 @@ defmodule ExLedger.LedgerParser do
     budget_adjustments =
       Enum.reduce(budget_totals, %{}, fn {account, currency_map}, acc ->
         Enum.reduce(currency_map, acc, fn {currency, value}, acc_inner ->
-          Map.update(acc_inner, {account, currency}, value * months, &(&1 + value * months))
+          months_dec = Decimal.new(months)
+          adjustment = Decimal.mult(value, months_dec)
+          Map.update(acc_inner, {account, currency}, adjustment, &Decimal.add(&1, adjustment))
         end)
       end)
 
@@ -1813,7 +1869,7 @@ defmodule ExLedger.LedgerParser do
       |> Map.new()
 
     current_entries
-    |> Map.merge(budget_adjustments, fn _key, value, adjustment -> value + adjustment end)
+    |> Map.merge(budget_adjustments, fn _key, value, adjustment -> Decimal.add(value, adjustment) end)
     |> Enum.reduce(%{}, fn {{account, currency}, value}, acc ->
       Map.update(acc, account, [%{amount: value, currency: currency}], fn amounts_list ->
         update_or_add_currency_amount(amounts_list, currency, value)
@@ -1856,10 +1912,10 @@ defmodule ExLedger.LedgerParser do
          acc,
          multiplier
        ) do
-    amount = value * multiplier
+    amount = Decimal.mult(to_decimal(value), multiplier)
 
     Map.update(acc, account, %{currency => amount}, fn totals ->
-      Map.update(totals, currency, amount, &(&1 + amount))
+      Map.update(totals, currency, amount, &Decimal.add(&1, amount))
     end)
   end
 
@@ -1883,7 +1939,7 @@ defmodule ExLedger.LedgerParser do
 
   defp add_posting_total(%{amount: %{value: value, currency: currency}, account: account}, acc) do
     Map.update(acc, account, %{currency => value}, fn totals ->
-      Map.update(totals, currency, value, &(&1 + value))
+      Map.update(totals, currency, value, &Decimal.add(&1, value))
     end)
   end
 
@@ -1899,20 +1955,22 @@ defmodule ExLedger.LedgerParser do
     normalized = String.downcase(period)
 
     cond do
-      String.contains?(normalized, "daily") -> 365.0 / 12.0
+      String.contains?(normalized, "daily") -> Decimal.div(Decimal.new(365), Decimal.new(12))
       String.contains?(normalized, "weekly") -> weekly_multiplier(normalized)
       String.contains?(normalized, "monthly") -> monthly_multiplier(normalized)
-      String.contains?(normalized, "quarter") -> 1.0 / 3.0
-      String.contains?(normalized, "year") -> 1.0 / 12.0
+      String.contains?(normalized, "quarter") -> Decimal.div(Decimal.new(1), Decimal.new(3))
+      String.contains?(normalized, "year") -> Decimal.div(Decimal.new(1), Decimal.new(12))
       true -> nil
     end
   end
 
   defp weekly_multiplier(normalized) do
-    if String.contains?(normalized, "bi"), do: 26.0 / 12.0, else: 52.0 / 12.0
+    if String.contains?(normalized, "bi"),
+      do: Decimal.div(Decimal.new(26), Decimal.new(12)),
+      else: Decimal.div(Decimal.new(52), Decimal.new(12))
   end
 
   defp monthly_multiplier(normalized) do
-    if String.contains?(normalized, "bi"), do: 0.5, else: 1.0
+    if String.contains?(normalized, "bi"), do: Decimal.new("0.5"), else: Decimal.new(1)
   end
 end

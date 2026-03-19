@@ -17,6 +17,7 @@ defmodule ExLedger.Parser.BalanceAssertions do
   """
 
   alias ExLedger.Parser.Core
+  import ExLedger.Parser.Helpers, only: [to_decimal: 1]
 
   @type assertion_failure :: %{
           account: String.t(),
@@ -82,9 +83,9 @@ defmodule ExLedger.Parser.BalanceAssertions do
   """
   @spec validate_transaction_assertions(
           Core.transaction(),
-          %{String.t() => %{String.t() => float()}},
+          %{String.t() => %{String.t() => Decimal.t()}},
           [assertion_failure()]
-        ) :: {%{String.t() => %{String.t() => float()}}, [assertion_failure()]}
+        ) :: {%{String.t() => %{String.t() => Decimal.t()}}, [assertion_failure()]}
   def validate_transaction_assertions(transaction, balances, failures) do
     Enum.reduce(transaction.postings, {balances, failures}, fn posting, {bal, fail} ->
       validate_posting_assertion(posting, transaction, bal, fail)
@@ -130,10 +131,13 @@ defmodule ExLedger.Parser.BalanceAssertions do
     expected = assertion.value
 
     account_balances = Map.get(balances, account, %{})
-    actual = Map.get(account_balances, currency, 0.0)
+    actual = Map.get(account_balances, currency, Decimal.new(0))
 
-    # Use tolerance for floating-point comparison
-    if abs(actual - expected) < 0.005 do
+    # Exact comparison is correct with Decimal since all values are parsed
+    # from strings without float intermediates (no precision loss).
+    # The old float tolerance (0.005) was needed to handle floating-point
+    # rounding errors, which don't occur with arbitrary-precision Decimals.
+    if Decimal.eq?(actual, expected) do
       {balances, failures}
     else
       failure = %{
@@ -158,11 +162,11 @@ defmodule ExLedger.Parser.BalanceAssertions do
 
     # For balance assertions, track the raw commodity amount (not the cost/effective value)
     # e.g., "10 AAPL @ 150 USD" should add 10 to the AAPL balance, not 1500
-    value = posting.amount.value
+    value = to_decimal(posting.amount.value)
 
     account_balances = Map.get(balances, account, %{})
-    current = Map.get(account_balances, currency, 0.0)
-    new_balance = current + value
+    current = Map.get(account_balances, currency, Decimal.new(0))
+    new_balance = Decimal.add(current, value)
 
     Map.put(balances, account, Map.put(account_balances, currency, new_balance))
   end
@@ -205,6 +209,10 @@ defmodule ExLedger.Parser.BalanceAssertions do
   defp format_amount(%{value: value, currency: nil}), do: format_number(value)
   defp format_amount(%{value: value, currency: "default"}), do: format_number(value)
   defp format_amount(%{value: value, currency: currency}), do: "#{format_number(value)} #{currency}"
+
+  defp format_number(%Decimal{} = value) do
+    value |> Decimal.round(2) |> Decimal.to_string(:normal)
+  end
 
   defp format_number(value) when is_float(value) do
     :erlang.float_to_binary(value, decimals: 2)

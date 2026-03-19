@@ -544,46 +544,25 @@ defmodule ExLedger.CLI do
   defp normalize_check_target(target), do: usage_error("unknown check target #{target}")
 
   defp run_check(:accounts, transactions, accounts, _contents, _payees, _commodities, _tags) do
-    case LedgerParser.check_accounts(transactions, accounts) do
-      :ok -> :ok
-      {:error, account} -> {:error, {"account \"#{account}\" has not been declared", 1}}
-    end
+    do_check(&LedgerParser.check_accounts/2, [transactions, accounts], "account")
   end
 
-  defp run_check(
-         :payees,
-         transactions,
-         _accounts,
-         _contents,
-         declared_payees,
-         _commodities,
-         _tags
-       ) do
-    case LedgerParser.check_payees(transactions, declared_payees) do
-      :ok -> :ok
-      {:error, payee} -> {:error, {"payee \"#{payee}\" has not been declared", 1}}
-    end
+  defp run_check(:payees, transactions, _accounts, _contents, payees, _commodities, _tags) do
+    do_check(&LedgerParser.check_payees/2, [transactions, payees], "payee")
   end
 
-  defp run_check(
-         :commodities,
-         transactions,
-         _accounts,
-         _contents,
-         _payees,
-         declared_commodities,
-         _tags
-       ) do
-    case LedgerParser.check_commodities(transactions, declared_commodities) do
-      :ok -> :ok
-      {:error, commodity} -> {:error, {"commodity \"#{commodity}\" has not been declared", 1}}
-    end
+  defp run_check(:commodities, transactions, _accounts, _contents, _payees, commodities, _tags) do
+    do_check(&LedgerParser.check_commodities/2, [transactions, commodities], "commodity")
   end
 
-  defp run_check(:tags, transactions, _accounts, contents, _payees, _commodities, declared_tags) do
-    case LedgerParser.check_tags(transactions, contents, declared_tags) do
+  defp run_check(:tags, transactions, _accounts, contents, _payees, _commodities, tags) do
+    do_check(&LedgerParser.check_tags/3, [transactions, contents, tags], "tag")
+  end
+
+  defp do_check(check_fn, args, entity_name) do
+    case apply(check_fn, args) do
       :ok -> :ok
-      {:error, tag} -> {:error, {"tag \"#{tag}\" has not been declared", 1}}
+      {:error, value} -> {:error, {"#{entity_name} \"#{value}\" has not been declared", 1}}
     end
   end
 

@@ -552,10 +552,10 @@ defmodule ExLedger.Section471Test do
       txn = parse_transaction!(input)
       [posting1, _posting2] = txn.postings
 
-      assert posting1.amount.value == 10
+      assert Decimal.eq?(posting1.amount.value, Decimal.new(10))
       assert posting1.amount.currency == "AAPL"
       assert posting1.cost.type == :per_unit
-      assert posting1.cost.amount.value == 150.00
+      assert Decimal.eq?(posting1.cost.amount.value, Decimal.from_float(150.00))
       assert posting1.cost.amount.currency == "$"
     end
 
@@ -569,10 +569,10 @@ defmodule ExLedger.Section471Test do
       txn = parse_transaction!(input)
       [posting1, _posting2] = txn.postings
 
-      assert posting1.amount.value == 10
+      assert Decimal.eq?(posting1.amount.value, Decimal.new(10))
       assert posting1.amount.currency == "AAPL"
       assert posting1.cost.type == :total
-      assert posting1.cost.amount.value == 1500.00
+      assert Decimal.eq?(posting1.cost.amount.value, Decimal.from_float(1500.00))
       assert posting1.cost.amount.currency == "$"
     end
 
@@ -587,7 +587,7 @@ defmodule ExLedger.Section471Test do
       [_posting1, posting2] = txn.postings
 
       # The checking account should be balanced against the total cost
-      assert posting2.amount.value == -1500.00
+      assert Decimal.eq?(posting2.amount.value, Decimal.from_float(-1500.00))
       assert posting2.amount.currency == "$"
     end
 
@@ -601,13 +601,13 @@ defmodule ExLedger.Section471Test do
       txn = parse_transaction!(input)
       [posting1, posting2] = txn.postings
 
-      assert posting1.amount.value == 100
+      assert Decimal.eq?(posting1.amount.value, Decimal.new(100))
       assert posting1.amount.currency == "EUR"
-      assert posting1.cost.amount.value == 1.10
+      assert Decimal.eq?(posting1.cost.amount.value, Decimal.new("1.10"))
       assert posting1.cost.amount.currency == "USD"
 
-      # Use tolerance for floating point comparison
-      assert_in_delta posting2.amount.value, -110.00, 0.01
+      # Decimal comparison (100 * 1.10 = 110)
+      assert Decimal.eq?(posting2.amount.value, Decimal.new(-110))
       assert posting2.amount.currency == "USD"
     end
 
@@ -622,10 +622,10 @@ defmodule ExLedger.Section471Test do
       [posting1, posting2] = txn.postings
 
       assert posting1.cost.type == :total
-      assert posting1.cost.amount.value == 110
+      assert Decimal.eq?(posting1.cost.amount.value, Decimal.new(110))
       assert posting1.cost.amount.currency == "USD"
 
-      assert posting2.amount.value == -110.00
+      assert Decimal.eq?(posting2.amount.value, Decimal.new(-110))
       assert posting2.amount.currency == "USD"
     end
   end

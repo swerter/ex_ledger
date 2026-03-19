@@ -4,7 +4,7 @@ defmodule ExLedger.MixProject do
   def project do
     [
       app: :ex_ledger,
-      version: "0.4.0",
+      version: "0.5.0",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -60,6 +60,7 @@ defmodule ExLedger.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:decimal, "~> 2.0"},
       {:nimble_parsec, "~> 1.0"},
       {:burrito, "~> 1.5"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

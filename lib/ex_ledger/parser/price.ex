@@ -8,7 +8,7 @@ defmodule ExLedger.Parser.Price do
   alias ExLedger.Parser.{Core, Transaction}
 
   @type price_directive :: Core.price_directive()
-  @type price_db :: %{{String.t(), String.t()} => [{Date.t(), float()}]}
+  @type price_db :: %{{String.t(), String.t()} => [{Date.t(), Decimal.t()}]}
 
   @doc """
   Extracts all price directives from input.
@@ -119,7 +119,7 @@ defmodule ExLedger.Parser.Price do
       {:error, :no_price_found}
   """
   @spec lookup_price(String.t(), String.t(), Date.t(), price_db()) ::
-          {:ok, float()} | {:error, :no_price_found}
+          {:ok, Decimal.t()} | {:error, :no_price_found}
   def lookup_price(from_commodity, to_commodity, date, price_db) do
     case Map.get(price_db, {from_commodity, to_commodity}) do
       nil ->

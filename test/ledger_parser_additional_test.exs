@@ -567,8 +567,8 @@ defmodule ExLedger.LedgerParserAdditionalTest do
 
     test "formats multi-currency totals" do
       balances = %{
-        "Assets:Cash" => [%{amount: 10.0, currency: "$"}],
-        "Assets:Bank" => [%{amount: 5.0, currency: "EUR"}]
+        "Assets:Cash" => [%{amount: Decimal.from_float(10.0), currency: "$"}],
+        "Assets:Bank" => [%{amount: Decimal.from_float(5.0), currency: "EUR"}]
       }
 
       output = LedgerParser.format_balance(balances)
@@ -579,7 +579,7 @@ defmodule ExLedger.LedgerParserAdditionalTest do
 
     test "normalizes tiny totals to zero" do
       balances = %{
-        "Assets:Cash" => [%{amount: 0.004, currency: "$"}]
+        "Assets:Cash" => [%{amount: Decimal.new("0.004"), currency: "$"}]
       }
 
       output = LedgerParser.format_balance(balances)
@@ -595,7 +595,8 @@ defmodule ExLedger.LedgerParserAdditionalTest do
       result = LedgerParser.balance_by_period(transactions, "daily")
 
       assert Enum.at(result["periods"], 0).label == "2024-01-01"
-      assert result["balances"]["2024-01-01"]["Expenses:Food"] |> hd() |> Map.get(:amount) == 5.0
+      amount = result["balances"]["2024-01-01"]["Expenses:Food"] |> hd() |> Map.get(:amount)
+      assert Decimal.eq?(amount, Decimal.from_float(5.0))
     end
 
     test "calculates weekly balances" do
@@ -605,9 +606,10 @@ defmodule ExLedger.LedgerParserAdditionalTest do
 
       assert Enum.at(result["periods"], 0).label =~ "Week"
 
-      assert result["balances"][Enum.at(result["periods"], 0).label]["Expenses:Food"]
+      amount = result["balances"][Enum.at(result["periods"], 0).label]["Expenses:Food"]
              |> hd()
-             |> Map.get(:amount) == 5.0
+             |> Map.get(:amount)
+      assert Decimal.eq?(amount, Decimal.from_float(5.0))
     end
 
     test "returns empty periods for unknown grouping" do
@@ -713,7 +715,7 @@ defmodule ExLedger.LedgerParserAdditionalTest do
   end
 
   defp simple_posting(account, value) do
-    posting(account, %{value: value, currency: "$"}, [])
+    posting(account, %{value: Decimal.from_float(value), currency: "$"}, [])
   end
 
   defp periodic(period, value) do
@@ -730,14 +732,14 @@ defmodule ExLedger.LedgerParserAdditionalTest do
       postings: [
         %{
           account: "Expenses:#{period}",
-          amount: %{value: value, currency: "$"},
+          amount: %{value: Decimal.from_float(value), currency: "$"},
           metadata: %{},
           tags: [],
           comments: []
         },
         %{
           account: "Assets:Cash",
-          amount: %{value: -value, currency: "$"},
+          amount: %{value: Decimal.from_float(-value), currency: "$"},
           metadata: %{},
           tags: [],
           comments: []

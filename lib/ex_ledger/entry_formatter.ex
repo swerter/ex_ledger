@@ -16,13 +16,13 @@ defmodule ExLedger.EntryFormatter do
     header = build_transaction_header(transaction, date)
     transaction_notes = if include_notes, do: format_transaction_notes(transaction), else: []
 
-    transaction_metadata = fetch_value(transaction, :metadata, %{})
+    transaction_metadata = Map.get(transaction, :metadata, %{})
 
     postings =
       transaction.postings
       |> Enum.with_index()
       |> Enum.flat_map(fn {posting, index} ->
-        account = fetch_value(posting, :account, "")
+        account = Map.get(posting, :account, "")
         amount_with_assertion = format_posting_amount_with_assertion(posting)
         metadata_to_filter = if include_notes and index == 0, do: transaction_metadata, else: %{}
         notes = if include_notes, do: format_posting_notes(posting, metadata_to_filter), else: []
@@ -42,17 +42,17 @@ defmodule ExLedger.EntryFormatter do
 
   defp build_transaction_header(transaction, date) do
     date_string = Calendar.strftime(date, "%Y/%m/%d")
-    code = fetch_value(transaction, :code, "")
-    comment = normalize_comment(fetch_value(transaction, :comment))
-    payee = fetch_value(transaction, :payee, "")
+    code = Map.get(transaction, :code, "")
+    comment = normalize_comment(Map.get(transaction, :comment))
+    payee = Map.get(transaction, :payee, "")
     code_segment = if code == "", do: "", else: " (#{code})"
     comment_segment = if comment, do: "  ; #{comment}", else: ""
     "#{date_string}#{code_segment} #{payee}#{comment_segment}"
   end
 
   defp format_posting_amount_with_assertion(posting) do
-    amount = format_posting_amount(fetch_value(posting, :amount))
-    assertion = format_posting_amount(fetch_value(posting, :assertion))
+    amount = format_posting_amount(Map.get(posting, :amount))
+    assertion = format_posting_amount(Map.get(posting, :assertion))
 
     case {amount, assertion} do
       {"", ""} -> ""
@@ -96,11 +96,11 @@ defmodule ExLedger.EntryFormatter do
   defp format_posting_notes(posting, transaction_metadata) do
     metadata =
       posting
-      |> fetch_value(:metadata, %{})
+      |> Map.get(:metadata, %{})
       |> drop_transaction_metadata(transaction_metadata)
 
-    tags = fetch_value(posting, :tags, [])
-    comments = fetch_value(posting, :comments, [])
+    tags = Map.get(posting, :tags, [])
+    comments = Map.get(posting, :comments, [])
 
     metadata_lines =
       metadata
@@ -153,7 +153,7 @@ defmodule ExLedger.EntryFormatter do
   end
 
   defp format_transaction_notes(transaction) do
-    metadata = fetch_value(transaction, :metadata, %{})
+    metadata = Map.get(transaction, :metadata, %{})
 
     metadata
     |> Enum.sort_by(fn {key, _value} -> key end)
@@ -164,9 +164,5 @@ defmodule ExLedger.EntryFormatter do
       {key, value} ->
         ["    ; #{key}: #{value}"]
     end)
-  end
-
-  defp fetch_value(map, key, default \\ nil) do
-    Map.get(map, key, default)
   end
 end

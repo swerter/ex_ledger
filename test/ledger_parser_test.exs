@@ -123,8 +123,10 @@ defmodule ExLedger.LedgerParserTest do
 
       transaction = parse_transaction!(input)
       [posting1, posting2] = transaction.postings
-      assert posting1.amount == %{value: -10.00, currency: "CHF", currency_position: :leading}
-      assert posting2.amount == %{value: 10.00, currency: "CHF", currency_position: :leading}
+      assert Decimal.eq?(posting1.amount.value, Decimal.from_float(-10.00))
+      assert posting1.amount.currency == "CHF"
+      assert Decimal.eq?(posting2.amount.value, Decimal.from_float(10.00))
+      assert posting2.amount.currency == "CHF"
     end
 
     test "accepts 2 or more spaces between account and amount" do
@@ -135,12 +137,11 @@ defmodule ExLedger.LedgerParserTest do
       """
 
       transaction = parse_transaction!(input)
+      amount = Enum.at(transaction.postings, 0).amount
 
-      assert Enum.at(transaction.postings, 0).amount == %{
-               value: 4.50,
-               currency: "$",
-               currency_position: :leading
-             }
+      assert Decimal.eq?(amount.value, Decimal.from_float(4.50))
+      assert amount.currency == "$"
+      assert amount.currency_position == :leading
     end
 
     test "rejects tab character before amount (insufficient_spacing)" do
@@ -179,9 +180,11 @@ defmodule ExLedger.LedgerParserTest do
       transaction = parse_transaction!(input)
       [posting1, posting2] = transaction.postings
       assert posting1.account == "6 Other expenses:6570 Computer:Development:Webapp"
-      assert posting1.amount == %{value: 225.96, currency: "CHF", currency_position: :leading}
+      assert Decimal.eq?(posting1.amount.value, Decimal.from_float(225.96))
+      assert posting1.amount.currency == "CHF"
       assert posting2.account == "1 Assets:10 Turnover:1022 Wise"
-      assert posting2.amount == %{value: -225.96, currency: "CHF", currency_position: :leading}
+      assert Decimal.eq?(posting2.amount.value, Decimal.from_float(-225.96))
+      assert posting2.amount.currency == "CHF"
     end
 
     test "rejects insufficient spacing with long account name" do
@@ -206,7 +209,8 @@ defmodule ExLedger.LedgerParserTest do
 
       [posting1, posting2] = transaction.postings
       assert posting1.account == "Expenses:Home Improvement"
-      assert posting1.amount == %{value: 125.50, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting1.amount.value, Decimal.from_float(125.50))
+      assert posting1.amount.currency == "$"
       assert posting2.account == "Assets:Checking"
     end
 
@@ -221,7 +225,8 @@ defmodule ExLedger.LedgerParserTest do
 
       [posting1, posting2] = transaction.postings
       assert posting1.account == "Liabilities:Credit Card Account"
-      assert posting1.amount == %{value: 50.00, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting1.amount.value, Decimal.from_float(50.00))
+      assert posting1.amount.currency == "$"
       assert posting2.account == "Assets:Checking Account"
     end
   end
@@ -244,11 +249,13 @@ defmodule ExLedger.LedgerParserTest do
       [posting1, posting2] = transaction.postings
 
       assert posting1.account == "Expenses:Food"
-      assert posting1.amount == %{value: 4.50, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting1.amount.value, Decimal.from_float(4.50))
+      assert posting1.amount.currency == "$"
 
       assert posting2.account == "Assets:Checking"
       # Should be automatically calculated as negative of first posting
-      assert posting2.amount == %{value: -4.50, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting2.amount.value, Decimal.from_float(-4.50))
+      assert posting2.amount.currency == "$"
     end
 
     test "parses transaction with DEP code and income deposit" do
@@ -268,11 +275,13 @@ defmodule ExLedger.LedgerParserTest do
       [posting1, posting2] = transaction.postings
 
       assert posting1.account == "Assets:Checking"
-      assert posting1.amount == %{value: 20.00, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting1.amount.value, Decimal.from_float(20.00))
+      assert posting1.amount.currency == "$"
 
       assert posting2.account == "Income"
       # Should be automatically calculated as negative of first posting
-      assert posting2.amount == %{value: -20.00, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting2.amount.value, Decimal.from_float(-20.00))
+      assert posting2.amount.currency == "$"
     end
 
     test "parses transaction with long hexadecimal code" do
@@ -292,11 +301,13 @@ defmodule ExLedger.LedgerParserTest do
       [posting1, posting2] = transaction.postings
 
       assert posting1.account == "Expenses:Food"
-      assert posting1.amount == %{value: 4.50, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting1.amount.value, Decimal.from_float(4.50))
+      assert posting1.amount.currency == "$"
 
       assert posting2.account == "Liabilities:Credit Card"
       # Should be automatically calculated as negative of first posting
-      assert posting2.amount == %{value: -4.50, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting2.amount.value, Decimal.from_float(-4.50))
+      assert posting2.amount.currency == "$"
     end
 
     test "parses transaction with auxiliary date and cleared state" do
@@ -348,10 +359,12 @@ defmodule ExLedger.LedgerParserTest do
       [posting1, posting2] = transaction.postings
 
       assert posting1.account == "3 Ertrag:3200 Handelsertrag:3210 Migadu:Paypal"
-      assert posting1.amount == %{value: 613.37, currency: "EUR", currency_position: :trailing}
+      assert Decimal.eq?(posting1.amount.value, Decimal.from_float(613.37))
+      assert posting1.amount.currency == "EUR"
 
       assert posting2.account == "6 Sonstiger Aufwand:6570 Informatik:Entwicklung:USD"
-      assert posting2.amount == %{value: -716.93, currency: "USD", currency_position: :trailing}
+      assert Decimal.eq?(posting2.amount.value, Decimal.from_float(-716.93))
+      assert posting2.amount.currency == "USD"
     end
 
     test "parses automated transaction" do
@@ -394,7 +407,8 @@ defmodule ExLedger.LedgerParserTest do
       assert transaction.payee == "Panera Bread"
 
       [_posting1, posting2] = transaction.postings
-      assert posting2.amount == %{value: -4.50, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting2.amount.value, Decimal.from_float(-4.50))
+      assert posting2.amount.currency == "$"
     end
 
     test "parses transaction with both amounts specified" do
@@ -408,8 +422,10 @@ defmodule ExLedger.LedgerParserTest do
 
       [posting1, posting2] = transaction.postings
 
-      assert posting1.amount == %{value: 4.50, currency: "$", currency_position: :leading}
-      assert posting2.amount == %{value: -4.50, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting1.amount.value, Decimal.from_float(4.50))
+      assert posting1.amount.currency == "$"
+      assert Decimal.eq?(posting2.amount.value, Decimal.from_float(-4.50))
+      assert posting2.amount.currency == "$"
     end
 
     test "parses transaction with payee and comment" do
@@ -543,8 +559,104 @@ defmodule ExLedger.LedgerParserTest do
       transaction = parse_transaction!(input)
 
       [posting1, posting2] = transaction.postings
-      assert posting1.amount == %{value: 100.00, currency: "CHF", currency_position: :trailing}
-      assert posting2.amount == %{value: -100.00, currency: "CHF", currency_position: :trailing}
+      assert Decimal.eq?(posting1.amount.value, Decimal.from_float(100.00))
+      assert posting1.amount.currency == "CHF"
+      assert Decimal.eq?(posting2.amount.value, Decimal.from_float(-100.00))
+      assert posting2.amount.currency == "CHF"
+    end
+
+    test "parses transaction with Japanese Yen (large numbers without decimals)" do
+      # Japanese Yen typically has no decimal places and uses large numbers
+      # Testing that Decimal parsing handles these correctly
+      input = """
+      2024/03/15 Tokyo Electronics Store
+          Expenses:Electronics          ¥158000
+          Assets:Bank:JPY
+      """
+
+      transaction = parse_transaction!(input)
+
+      [posting1, posting2] = transaction.postings
+      assert posting1.account == "Expenses:Electronics"
+      assert Decimal.eq?(posting1.amount.value, Decimal.new(158000))
+      assert posting1.amount.currency == "¥"
+      assert posting1.amount.currency_position == :leading
+
+      assert posting2.account == "Assets:Bank:JPY"
+      assert Decimal.eq?(posting2.amount.value, Decimal.new(-158000))
+      assert posting2.amount.currency == "¥"
+    end
+
+    test "parses transaction with Japanese Yen using JPY currency code" do
+      # Using JPY as trailing currency code with very large numbers
+      input = """
+      2024/03/20 Salary Payment
+          Assets:Bank:Japan            2850000 JPY
+          Income:Salary:Japan         -2850000 JPY
+      """
+
+      transaction = parse_transaction!(input)
+
+      [posting1, posting2] = transaction.postings
+      assert Decimal.eq?(posting1.amount.value, Decimal.new(2850000))
+      assert posting1.amount.currency == "JPY"
+      assert posting1.amount.currency_position == :trailing
+
+      assert Decimal.eq?(posting2.amount.value, Decimal.new(-2850000))
+      assert posting2.amount.currency == "JPY"
+    end
+
+    test "parses multi-currency transaction with JPY conversion" do
+      # Testing JPY in a multi-currency context with cost basis
+      input = """
+      2024/04/01 Currency Exchange
+          Assets:Bank:USD              1000 USD @@ 149500 JPY
+          Assets:Bank:Japan           -149500 JPY
+      """
+
+      transaction = parse_transaction!(input)
+
+      [posting1, posting2] = transaction.postings
+      assert Decimal.eq?(posting1.amount.value, Decimal.new(1000))
+      assert posting1.amount.currency == "USD"
+      assert posting1.cost.type == :total
+      assert Decimal.eq?(posting1.cost.amount.value, Decimal.new(149500))
+      assert posting1.cost.amount.currency == "JPY"
+
+      assert Decimal.eq?(posting2.amount.value, Decimal.new(-149500))
+      assert posting2.amount.currency == "JPY"
+    end
+
+    test "balance calculation works with large JPY amounts" do
+      input = """
+      2024/01/01 Opening Balance
+          Assets:Bank:Japan            10000000 JPY
+          Equity:Opening
+
+      2024/01/15 Rent Payment
+          Expenses:Rent                  150000 JPY
+          Assets:Bank:Japan
+
+      2024/01/25 Grocery Shopping
+          Expenses:Food                   25000 JPY
+          Assets:Bank:Japan
+      """
+
+      {:ok, result} = LedgerParser.parse_ledger(input)
+      balances = LedgerParser.balance(result.transactions)
+
+      # Assets:Bank:Japan should be 10000000 - 150000 - 25000 = 9825000 JPY
+      bank_balance = balances["Assets:Bank:Japan"] |> hd()
+      assert Decimal.eq?(bank_balance.amount, Decimal.new(9825000))
+      assert bank_balance.currency == "JPY"
+
+      # Expenses:Rent should be 150000 JPY
+      rent_balance = balances["Expenses:Rent"] |> hd()
+      assert Decimal.eq?(rent_balance.amount, Decimal.new(150000))
+
+      # Expenses:Food should be 25000 JPY
+      food_balance = balances["Expenses:Food"] |> hd()
+      assert Decimal.eq?(food_balance.amount, Decimal.new(25000))
     end
 
     test "parses transaction at sign in description" do
@@ -582,10 +694,12 @@ defmodule ExLedger.LedgerParserTest do
       [posting1, posting2] = transaction.postings
 
       assert posting1.account == "5 Personal:58 Other:5880 Other Personal expenses"
-      assert posting1.amount == %{value: 60.18, currency: "CHF", currency_position: :leading}
+      assert Decimal.eq?(posting1.amount.value, Decimal.from_float(60.18))
+      assert posting1.amount.currency == "CHF"
 
       assert posting2.account == "1 Assets:10 Turnover:1022 Abb"
-      assert posting2.amount == %{value: -60.18, currency: "CHF", currency_position: :leading}
+      assert Decimal.eq?(posting2.amount.value, Decimal.from_float(-60.18))
+      assert posting2.amount.currency == "CHF"
     end
 
     test "parses transaction with single-digit decimal amounts" do
@@ -606,13 +720,16 @@ defmodule ExLedger.LedgerParserTest do
       [posting1, posting2, posting3] = transaction.postings
 
       assert posting1.account == "1 Assets:Receivables:Paypal:USD"
-      assert posting1.amount == %{value: -75.0, currency: "USD", currency_position: :leading}
+      assert Decimal.eq?(posting1.amount.value, Decimal.from_float(-75.0))
+      assert posting1.amount.currency == "USD"
 
       assert posting2.account == "6 Expenses:Bank:Fees"
-      assert posting2.amount == %{value: 8.4, currency: "USD", currency_position: :leading}
+      assert Decimal.eq?(posting2.amount.value, Decimal.from_float(8.4))
+      assert posting2.amount.currency == "USD"
 
       assert posting3.account == "5 Expenses:Other"
-      assert posting3.amount == %{value: 66.6, currency: "USD", currency_position: :leading}
+      assert Decimal.eq?(posting3.amount.value, Decimal.from_float(66.6))
+      assert posting3.amount.currency == "USD"
     end
   end
 
@@ -636,7 +753,8 @@ defmodule ExLedger.LedgerParserTest do
       posting = parse_posting!(input)
 
       assert posting.account == "Expenses:Food"
-      assert posting.amount == %{value: 4.50, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting.amount.value, Decimal.from_float(4.50))
+      assert posting.amount.currency == "$"
     end
 
     test "parses posting without amount (to be auto-balanced)" do
@@ -654,7 +772,8 @@ defmodule ExLedger.LedgerParserTest do
       posting = parse_posting!(input)
 
       assert posting.account == "Assets:Checking"
-      assert posting.amount == %{value: -4.50, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting.amount.value, Decimal.from_float(-4.50))
+      assert posting.amount.currency == "$"
     end
 
     test "parses posting with multi-level account" do
@@ -663,7 +782,8 @@ defmodule ExLedger.LedgerParserTest do
       posting = parse_posting!(input)
 
       assert posting.account == "Liabilities:Credit Card"
-      assert posting.amount == %{value: 4.50, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting.amount.value, Decimal.from_float(4.50))
+      assert posting.amount.currency == "$"
     end
 
     test "parses posting with trailing currency code" do
@@ -672,12 +792,14 @@ defmodule ExLedger.LedgerParserTest do
       posting = parse_posting!(input)
 
       assert posting.account == "Assets:Cash"
-      assert posting.amount == %{value: 10.00, currency: "CHF", currency_position: :trailing}
+      assert Decimal.eq?(posting.amount.value, Decimal.from_float(10.00))
+      assert posting.amount.currency == "CHF"
     end
 
     test "parses posting with different amounts" do
       posting = parse_posting!("    Income    $20.00")
-      assert posting.amount == %{value: 20.00, currency: "$", currency_position: :leading}
+      assert Decimal.eq?(posting.amount.value, Decimal.from_float(20.00))
+      assert posting.amount.currency == "$"
     end
   end
 
@@ -782,59 +904,107 @@ defmodule ExLedger.LedgerParserTest do
   describe "parse_amount/1" do
     test "parses bare-number amounts without currency" do
       # Bare numbers should have nil currency, not default to "$"
-      assert {:ok, %{value: 100.0, currency: nil}} = LedgerParser.parse_amount("100")
-      assert {:ok, %{value: 42.50, currency: nil}} = LedgerParser.parse_amount("42.50")
-      assert {:ok, %{value: -25.75, currency: nil}} = LedgerParser.parse_amount("-25.75")
+      {:ok, amt1} = LedgerParser.parse_amount("100")
+      assert Decimal.eq?(amt1.value, Decimal.new(100))
+      assert amt1.currency == nil
+
+      {:ok, amt2} = LedgerParser.parse_amount("42.50")
+      assert Decimal.eq?(amt2.value, Decimal.from_float(42.50))
+      assert amt2.currency == nil
+
+      {:ok, amt3} = LedgerParser.parse_amount("-25.75")
+      assert Decimal.eq?(amt3.value, Decimal.from_float(-25.75))
+      assert amt3.currency == nil
 
       assert {:ok, amount} = LedgerParser.parse_amount("100")
       assert amount.currency_position == nil
     end
 
     test "parses dollar amounts with cents" do
-      assert {:ok, %{value: 4.50, currency: "$"}} = LedgerParser.parse_amount("$4.50")
-      assert {:ok, %{value: 20.00, currency: "$"}} = LedgerParser.parse_amount("$20.00")
+      {:ok, amt1} = LedgerParser.parse_amount("$4.50")
+      assert Decimal.eq?(amt1.value, Decimal.from_float(4.50))
+      assert amt1.currency == "$"
+
+      {:ok, amt2} = LedgerParser.parse_amount("$20.00")
+      assert Decimal.eq?(amt2.value, Decimal.from_float(20.00))
+      assert amt2.currency == "$"
 
       assert {:ok, amount} = LedgerParser.parse_amount("$4.50")
       assert amount.currency_position == :leading
     end
 
     test "parses negative dollar amounts" do
-      assert {:ok, %{value: -4.50, currency: "$"}} = LedgerParser.parse_amount("-$4.50")
-      assert {:ok, %{value: -20.00, currency: "$"}} = LedgerParser.parse_amount("-$20.00")
+      {:ok, amt1} = LedgerParser.parse_amount("-$4.50")
+      assert Decimal.eq?(amt1.value, Decimal.from_float(-4.50))
+      assert amt1.currency == "$"
+
+      {:ok, amt2} = LedgerParser.parse_amount("-$20.00")
+      assert Decimal.eq?(amt2.value, Decimal.from_float(-20.00))
+      assert amt2.currency == "$"
     end
 
     test "parses dollar amounts without cents" do
-      assert {:ok, %{value: 4.0, currency: "$"}} = LedgerParser.parse_amount("$4")
-      assert {:ok, %{value: 20.0, currency: "$"}} = LedgerParser.parse_amount("$20")
+      {:ok, amt1} = LedgerParser.parse_amount("$4")
+      assert Decimal.eq?(amt1.value, Decimal.new(4))
+      assert amt1.currency == "$"
+
+      {:ok, amt2} = LedgerParser.parse_amount("$20")
+      assert Decimal.eq?(amt2.value, Decimal.new(20))
+      assert amt2.currency == "$"
     end
 
     test "parses amounts with single-digit decimal" do
-      assert {:ok, %{value: 4.5, currency: "$"}} = LedgerParser.parse_amount("$4.5")
-      assert {:ok, %{value: 75.0, currency: "USD"}} = LedgerParser.parse_amount("USD 75.0")
-      assert {:ok, %{value: -75.0, currency: "USD"}} = LedgerParser.parse_amount("USD -75.0")
-      assert {:ok, %{value: 66.6, currency: "CHF"}} = LedgerParser.parse_amount("CHF 66.6")
+      {:ok, amt1} = LedgerParser.parse_amount("$4.5")
+      assert Decimal.eq?(amt1.value, Decimal.from_float(4.5))
+
+      {:ok, amt2} = LedgerParser.parse_amount("USD 75.0")
+      assert Decimal.eq?(amt2.value, Decimal.from_float(75.0))
+
+      {:ok, amt3} = LedgerParser.parse_amount("USD -75.0")
+      assert Decimal.eq?(amt3.value, Decimal.from_float(-75.0))
+
+      {:ok, amt4} = LedgerParser.parse_amount("CHF 66.6")
+      assert Decimal.eq?(amt4.value, Decimal.from_float(66.6))
     end
 
     test "parses amounts with varying decimal precision" do
-      assert {:ok, %{value: 4.5, currency: "$"}} = LedgerParser.parse_amount("$4.5")
-      assert {:ok, %{value: 4.50, currency: "$"}} = LedgerParser.parse_amount("$4.50")
-      assert {:ok, %{value: 4.123, currency: "$"}} = LedgerParser.parse_amount("$4.123")
-      assert {:ok, %{value: 4.12345, currency: "$"}} = LedgerParser.parse_amount("$4.12345")
+      {:ok, amt1} = LedgerParser.parse_amount("$4.5")
+      assert Decimal.eq?(amt1.value, Decimal.new("4.5"))
+
+      {:ok, amt2} = LedgerParser.parse_amount("$4.50")
+      assert Decimal.eq?(amt2.value, Decimal.new("4.50"))
+
+      {:ok, amt3} = LedgerParser.parse_amount("$4.123")
+      assert Decimal.eq?(amt3.value, Decimal.new("4.123"))
+
+      {:ok, amt4} = LedgerParser.parse_amount("$4.12345")
+      assert Decimal.eq?(amt4.value, Decimal.new("4.12345"))
     end
 
     test "parses amounts with trailing currency code" do
-      assert {:ok, %{value: 10.0, currency: "CHF"}} = LedgerParser.parse_amount("10 CHF")
-      assert {:ok, %{value: -10.5, currency: "USD"}} = LedgerParser.parse_amount("-10.5 USD")
-      assert {:ok, %{value: 75.0, currency: "EUR"}} = LedgerParser.parse_amount("75 EUR")
+      {:ok, amt} = LedgerParser.parse_amount("10 CHF")
+      assert Decimal.eq?(amt.value, Decimal.new(10))
+      assert amt.currency == "CHF"
+      {:ok, amt2} = LedgerParser.parse_amount("-10.5 USD")
+      assert Decimal.eq?(amt2.value, Decimal.from_float(-10.5))
+      assert amt2.currency == "USD"
+
+      {:ok, amt3} = LedgerParser.parse_amount("75 EUR")
+      assert Decimal.eq?(amt3.value, Decimal.new(75))
+      assert amt3.currency == "EUR"
 
       assert {:ok, amount} = LedgerParser.parse_amount("10 CHF")
       assert amount.currency_position == :trailing
     end
 
     test "parses amounts without decimal point" do
-      assert {:ok, %{value: 100.0, currency: "USD"}} = LedgerParser.parse_amount("USD 100")
-      assert {:ok, %{value: value, currency: "CHF"}} = LedgerParser.parse_amount("CHF 0")
-      assert value == 0.0
+      {:ok, amt1} = LedgerParser.parse_amount("USD 100")
+      assert Decimal.eq?(amt1.value, Decimal.new(100))
+      assert amt1.currency == "USD"
+
+      {:ok, amt2} = LedgerParser.parse_amount("CHF 0")
+      assert Decimal.eq?(amt2.value, Decimal.new(0))
+      assert amt2.currency == "CHF"
     end
 
     test "returns error for invalid amounts" do
@@ -849,78 +1019,74 @@ defmodule ExLedger.LedgerParserTest do
       postings = [
         %{
           account: "Expenses:Food",
-          amount: %{value: 4.50, currency: "$", currency_position: :leading}
+          amount: %{value: Decimal.from_float(4.50), currency: "$", currency_position: :leading}
         },
         %{account: "Assets:Checking", amount: nil}
       ]
 
       result = LedgerParser.balance_postings(postings)
+      balanced = Enum.at(result, 1).amount
 
-      assert Enum.at(result, 1).amount == %{
-               value: -4.50,
-               currency: "$",
-               currency_position: :leading
-             }
+      assert Decimal.eq?(balanced.value, Decimal.from_float(-4.50))
+      assert balanced.currency == "$"
     end
 
     test "balances postings when first amount is nil" do
       postings = [
         %{account: "Assets:Checking", amount: nil},
-        %{account: "Income", amount: %{value: 20.00, currency: "$", currency_position: :leading}}
+        %{account: "Income", amount: %{value: Decimal.from_float(20.00), currency: "$", currency_position: :leading}}
       ]
 
       result = LedgerParser.balance_postings(postings)
+      balanced = Enum.at(result, 0).amount
 
-      assert Enum.at(result, 0).amount == %{
-               value: -20.00,
-               currency: "$",
-               currency_position: :leading
-             }
+      assert Decimal.eq?(balanced.value, Decimal.from_float(-20.00))
+      assert balanced.currency == "$"
     end
 
     test "does not modify postings when all amounts are specified" do
       postings = [
         %{
           account: "Expenses:Food",
-          amount: %{value: 4.50, currency: "$", currency_position: :leading}
+          amount: %{value: Decimal.from_float(4.50), currency: "$", currency_position: :leading}
         },
         %{
           account: "Assets:Checking",
-          amount: %{value: -4.50, currency: "$", currency_position: :leading}
+          amount: %{value: Decimal.from_float(-4.50), currency: "$", currency_position: :leading}
         }
       ]
 
       result = LedgerParser.balance_postings(postings)
 
-      assert result == postings
+      # Compare values individually since Decimal structs need Decimal.eq?
+      assert Decimal.eq?(Enum.at(result, 0).amount.value, Enum.at(postings, 0).amount.value)
+      assert Decimal.eq?(Enum.at(result, 1).amount.value, Enum.at(postings, 1).amount.value)
     end
 
     test "balances with multiple postings (one nil)" do
       postings = [
         %{
           account: "Expenses:Food",
-          amount: %{value: 3.00, currency: "$", currency_position: :leading}
+          amount: %{value: Decimal.from_float(3.00), currency: "$", currency_position: :leading}
         },
         %{
           account: "Expenses:Drink",
-          amount: %{value: 1.50, currency: "$", currency_position: :leading}
+          amount: %{value: Decimal.from_float(1.50), currency: "$", currency_position: :leading}
         },
         %{account: "Assets:Checking", amount: nil}
       ]
 
       result = LedgerParser.balance_postings(postings)
+      balanced = Enum.at(result, 2).amount
 
-      assert Enum.at(result, 2).amount == %{
-               value: -4.50,
-               currency: "$",
-               currency_position: :leading
-             }
+      assert Decimal.eq?(balanced.value, Decimal.from_float(-4.50))
+      assert balanced.currency == "$"
     end
 
     test "does not auto-balance multi-currency postings with a missing amount" do
       postings = [
-        %{account: "Assets:Cash", amount: %{value: 10.00, currency: "USD"}},
-        %{account: "Expenses:Fees", amount: %{value: -5.00, currency: "CHF"}},
+        %{account: "Assets:Cash", amount: %{value: Decimal.from_float(10.00), currency: "USD"}},
+        %{account: "Expenses:Fees", amount: %{value: Decimal.from_float(-5.00), currency: "CHF"}},
         %{account: "Equity:Opening", amount: nil}
       ]
 
@@ -969,9 +1135,9 @@ defmodule ExLedger.LedgerParserTest do
         total =
           transaction.postings
           |> Enum.map(& &1.amount.value)
-          |> Enum.sum()
+          |> Enum.reduce(Decimal.new(0), &Decimal.add/2)
 
-        assert_in_delta total, 0.0, 0.01
+        assert Decimal.eq?(total, Decimal.new(0))
       end)
     end
 
@@ -1008,9 +1174,9 @@ defmodule ExLedger.LedgerParserTest do
         total =
           transaction.postings
           |> Enum.map(& &1.amount.value)
-          |> Enum.sum()
+          |> Enum.reduce(Decimal.new(0), &Decimal.add/2)
 
-        assert_in_delta total, 0.0, 0.01
+        assert Decimal.eq?(total, Decimal.new(0))
       end)
     end
 
@@ -1033,20 +1199,12 @@ defmodule ExLedger.LedgerParserTest do
       [first_posting, second_posting] = first_transaction.postings
 
       assert first_posting.account == "Expenses:Office:Postage"
-
-      assert first_posting.amount == %{
-               value: 145.50,
-               currency: "CHF",
-               currency_position: :trailing
-             }
+      assert Decimal.eq?(first_posting.amount.value, Decimal.from_float(145.50))
+      assert first_posting.amount.currency == "CHF"
 
       assert second_posting.account == "Assets:Bank:Checking"
-
-      assert second_posting.amount == %{
-               value: -145.50,
-               currency: "CHF",
-               currency_position: :trailing
-             }
+      assert Decimal.eq?(second_posting.amount.value, Decimal.from_float(-145.50))
+      assert second_posting.amount.currency == "CHF"
 
       assert String.contains?(content, "; Attachment: bills/2025-01-05_Swiss_Post.pdf")
       assert String.contains?(content, "; Attachment: bills/2025-01-05_another.pdf")
@@ -1190,10 +1348,10 @@ defmodule ExLedger.LedgerParserTest do
       assert length(transaction.postings) == 4
 
       # First posting should be auto-balanced to 600.00
-      assert Enum.at(transaction.postings, 0).amount.value == 600.00
-      assert Enum.at(transaction.postings, 1).amount.value == -100.00
-      assert Enum.at(transaction.postings, 2).amount.value == -200.00
-      assert Enum.at(transaction.postings, 3).amount.value == -300.00
+      assert Decimal.eq?(Enum.at(transaction.postings, 0).amount.value, Decimal.from_float(600.00))
+      assert Decimal.eq?(Enum.at(transaction.postings, 1).amount.value, Decimal.from_float(-100.00))
+      assert Decimal.eq?(Enum.at(transaction.postings, 2).amount.value, Decimal.from_float(-200.00))
+      assert Decimal.eq?(Enum.at(transaction.postings, 3).amount.value, Decimal.from_float(-300.00))
     end
 
     test "keeps posting notes and metadata when parsing multiple transactions" do
@@ -1265,13 +1423,13 @@ defmodule ExLedger.LedgerParserTest do
       assert length(transaction.postings) == 3
 
       # Check amounts are parsed correctly
-      assert Enum.at(transaction.postings, 0).amount.value == 95.01
-      assert Enum.at(transaction.postings, 1).amount.value == 4.99
-      assert Enum.at(transaction.postings, 2).amount.value == -100.0
+      assert Decimal.eq?(Enum.at(transaction.postings, 0).amount.value, Decimal.new("95.01"))
+      assert Decimal.eq?(Enum.at(transaction.postings, 1).amount.value, Decimal.new("4.99"))
+      assert Decimal.eq?(Enum.at(transaction.postings, 2).amount.value, Decimal.new("-100.0"))
 
       # Verify transaction balances
-      total = Enum.reduce(transaction.postings, 0.0, fn p, acc -> acc + p.amount.value end)
-      assert abs(total) < 0.01
+      total = Enum.reduce(transaction.postings, Decimal.new(0), fn p, acc -> Decimal.add(acc, p.amount.value) end)
+      assert Decimal.eq?(total, Decimal.new(0))
     end
 
     test "includes start line for failing transaction" do
@@ -1452,7 +1610,7 @@ defmodule ExLedger.LedgerParserTest do
 
       assert last_posting.amount != nil, "Last posting should be auto-balanced"
       assert last_posting.amount.currency == "CHF", "Should balance in CHF (non-zero currency)"
-      assert abs(last_posting.amount.value - -1000.0) < 0.01, "Should balance to -1000 CHF"
+      assert Decimal.eq?(last_posting.amount.value, Decimal.new(-1000)), "Should balance to -1000 CHF"
     end
 
     test "allows transaction with multiple zero-value currencies and missing amount" do
@@ -1473,7 +1631,7 @@ defmodule ExLedger.LedgerParserTest do
 
       assert last_posting.amount != nil
       assert last_posting.amount.currency == "CHF"
-      assert abs(last_posting.amount.value - -500.0) < 0.01
+      assert Decimal.eq?(last_posting.amount.value, Decimal.new(-500))
     end
   end
 
@@ -1485,8 +1643,8 @@ defmodule ExLedger.LedgerParserTest do
           code: "XFER",
           payee: "Panera Bread",
           postings: [
-            %{account: "Expenses:Food", amount: %{value: 4.50, currency: "$"}},
-            %{account: "Assets:Checking", amount: %{value: -4.50, currency: "$"}}
+            %{account: "Expenses:Food", amount: %{value: Decimal.new("4.50"), currency: "$"}},
+            %{account: "Assets:Checking", amount: %{value: Decimal.new("-4.50"), currency: "$"}}
           ]
         },
         %{
@@ -1494,8 +1652,8 @@ defmodule ExLedger.LedgerParserTest do
           code: "DEP",
           payee: "Pay day!",
           postings: [
-            %{account: "Assets:Checking", amount: %{value: 20.00, currency: "$"}},
-            %{account: "Income", amount: %{value: -20.00, currency: "$"}}
+            %{account: "Assets:Checking", amount: %{value: Decimal.new("20.00"), currency: "$"}},
+            %{account: "Income", amount: %{value: Decimal.new("-20.00"), currency: "$"}}
           ]
         },
         %{
@@ -1503,8 +1661,8 @@ defmodule ExLedger.LedgerParserTest do
           code: "XFER",
           payee: "Panera Bread",
           postings: [
-            %{account: "Expenses:Food", amount: %{value: 4.50, currency: "$"}},
-            %{account: "Assets:Checking", amount: %{value: -4.50, currency: "$"}}
+            %{account: "Expenses:Food", amount: %{value: Decimal.new("4.50"), currency: "$"}},
+            %{account: "Assets:Checking", amount: %{value: Decimal.new("-4.50"), currency: "$"}}
           ]
         },
         %{
@@ -1512,8 +1670,8 @@ defmodule ExLedger.LedgerParserTest do
           code: "559385768438A8D7",
           payee: "Panera Bread",
           postings: [
-            %{account: "Expenses:Food", amount: %{value: 4.50, currency: "$"}},
-            %{account: "Liabilities:Credit Card", amount: %{value: -4.50, currency: "$"}}
+            %{account: "Expenses:Food", amount: %{value: Decimal.new("4.50"), currency: "$"}},
+            %{account: "Liabilities:Credit Card", amount: %{value: Decimal.new("-4.50"), currency: "$"}}
           ]
         }
       ]
@@ -1529,31 +1687,24 @@ defmodule ExLedger.LedgerParserTest do
       assert length(result) == 3
 
       # First posting: 09-Oct-29 Panera Bread   Expenses:Food       $4.50     $4.50
-      assert Enum.at(result, 0) == %{
-               date: ~D[2009-10-29],
-               description: "Panera Bread",
-               account: "Expenses:Food",
-               amount: 4.50,
-               balance: 4.50
-             }
+      p0 = Enum.at(result, 0)
+      assert p0.date == ~D[2009-10-29]
+      assert p0.description == "Panera Bread"
+      assert p0.account == "Expenses:Food"
+      assert Decimal.eq?(p0.amount, Decimal.from_float(4.50))
+      assert Decimal.eq?(p0.balance, Decimal.from_float(4.50))
 
       # Second posting: 09-Oct-30 Panera Bread   Expenses:Food       $4.50     $9.00
-      assert Enum.at(result, 1) == %{
-               date: ~D[2009-10-30],
-               description: "Panera Bread",
-               account: "Expenses:Food",
-               amount: 4.50,
-               balance: 9.00
-             }
+      p1 = Enum.at(result, 1)
+      assert p1.date == ~D[2009-10-30]
+      assert Decimal.eq?(p1.amount, Decimal.from_float(4.50))
+      assert Decimal.eq?(p1.balance, Decimal.from_float(9.00))
 
       # Third posting: 09-Oct-31 Panera Bread   Expenses:Food       $4.50     $13.50
-      assert Enum.at(result, 2) == %{
-               date: ~D[2009-10-31],
-               description: "Panera Bread",
-               account: "Expenses:Food",
-               amount: 4.50,
-               balance: 13.50
-             }
+      p2 = Enum.at(result, 2)
+      assert p2.date == ~D[2009-10-31]
+      assert Decimal.eq?(p2.amount, Decimal.from_float(4.50))
+      assert Decimal.eq?(p2.balance, Decimal.from_float(13.50))
     end
 
     test "returns postings for Assets:Checking account with running balance", %{
@@ -1564,31 +1715,24 @@ defmodule ExLedger.LedgerParserTest do
       assert length(result) == 3
 
       # First: 09-Oct-29 Panera Bread   Assets:Checking   -$4.50    -$4.50
-      assert Enum.at(result, 0) == %{
-               date: ~D[2009-10-29],
-               description: "Panera Bread",
-               account: "Assets:Checking",
-               amount: -4.50,
-               balance: -4.50
-             }
+      p0 = Enum.at(result, 0)
+      assert p0.date == ~D[2009-10-29]
+      assert p0.description == "Panera Bread"
+      assert p0.account == "Assets:Checking"
+      assert Decimal.eq?(p0.amount, Decimal.from_float(-4.50))
+      assert Decimal.eq?(p0.balance, Decimal.from_float(-4.50))
 
       # Second: 09-Oct-30 Pay day!   Assets:Checking   $20.00    $15.50
-      assert Enum.at(result, 1) == %{
-               date: ~D[2009-10-30],
-               description: "Pay day!",
-               account: "Assets:Checking",
-               amount: 20.00,
-               balance: 15.50
-             }
+      p1 = Enum.at(result, 1)
+      assert p1.date == ~D[2009-10-30]
+      assert Decimal.eq?(p1.amount, Decimal.from_float(20.00))
+      assert Decimal.eq?(p1.balance, Decimal.from_float(15.50))
 
       # Third: 09-Oct-30 Panera Bread   Assets:Checking   -$4.50    $11.00
-      assert Enum.at(result, 2) == %{
-               date: ~D[2009-10-30],
-               description: "Panera Bread",
-               account: "Assets:Checking",
-               amount: -4.50,
-               balance: 11.00
-             }
+      p2 = Enum.at(result, 2)
+      assert p2.date == ~D[2009-10-30]
+      assert Decimal.eq?(p2.amount, Decimal.from_float(-4.50))
+      assert Decimal.eq?(p2.balance, Decimal.from_float(11.00))
     end
 
     test "returns postings for Income account with running balance", %{transactions: transactions} do
@@ -1596,13 +1740,12 @@ defmodule ExLedger.LedgerParserTest do
 
       assert length(result) == 1
 
-      assert Enum.at(result, 0) == %{
-               date: ~D[2009-10-30],
-               description: "Pay day!",
-               account: "Income",
-               amount: -20.00,
-               balance: -20.00
-             }
+      p0 = Enum.at(result, 0)
+      assert p0.date == ~D[2009-10-30]
+      assert p0.description == "Pay day!"
+      assert p0.account == "Income"
+      assert Decimal.eq?(p0.amount, Decimal.from_float(-20.00))
+      assert Decimal.eq?(p0.balance, Decimal.from_float(-20.00))
     end
 
     test "returns postings for Liabilities:Credit Card account with running balance", %{
@@ -1612,13 +1755,12 @@ defmodule ExLedger.LedgerParserTest do
 
       assert length(result) == 1
 
-      assert Enum.at(result, 0) == %{
-               date: ~D[2009-10-31],
-               description: "Panera Bread",
-               account: "Liabilities:Credit Card",
-               amount: -4.50,
-               balance: -4.50
-             }
+      p0 = Enum.at(result, 0)
+      assert p0.date == ~D[2009-10-31]
+      assert p0.description == "Panera Bread"
+      assert p0.account == "Liabilities:Credit Card"
+      assert Decimal.eq?(p0.amount, Decimal.from_float(-4.50))
+      assert Decimal.eq?(p0.balance, Decimal.from_float(-4.50))
     end
 
     test "returns empty list for non-existent account", %{transactions: transactions} do
@@ -1633,14 +1775,14 @@ defmodule ExLedger.LedgerParserTest do
       result = LedgerParser.get_account_postings(transactions, "Expenses:Food")
 
       # Verify running balance calculation
-      assert Enum.at(result, 0).balance == 4.50
-      assert Enum.at(result, 1).balance == 9.00
-      assert Enum.at(result, 2).balance == 13.50
+      assert Decimal.eq?(Enum.at(result, 0).balance, Decimal.from_float(4.50))
+      assert Decimal.eq?(Enum.at(result, 1).balance, Decimal.from_float(9.00))
+      assert Decimal.eq?(Enum.at(result, 2).balance, Decimal.from_float(13.50))
 
       # Verify each balance is cumulative
-      Enum.reduce(result, 0.0, fn posting, acc ->
-        expected_balance = acc + posting.amount
-        assert_in_delta posting.balance, expected_balance, 0.01
+      Enum.reduce(result, Decimal.new(0), fn posting, acc ->
+        expected_balance = Decimal.add(acc, posting.amount)
+        assert Decimal.eq?(posting.balance, expected_balance)
         posting.balance
       end)
     end
@@ -2337,8 +2479,8 @@ defmodule ExLedger.LedgerParserTest do
       refute Map.has_key?(balances, "checking")
       refute Map.has_key?(balances, "food")
 
-      assert balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 50.0
-      assert balances["Assets:Checking"] |> hd() |> Map.get(:amount) == -50.0
+      assert Decimal.eq?(balances["Expenses:Food"] |> hd() |> Map.get(:amount), Decimal.new(50))
+      assert Decimal.eq?(balances["Assets:Checking"] |> hd() |> Map.get(:amount), Decimal.new(-50))
     end
 
     test "stats resolves aliases before calculating statistics" do
@@ -2667,8 +2809,8 @@ defmodule ExLedger.LedgerParserTest do
       # Verify amounts are combined correctly
       [%{amount: food_balance, currency: "$"}] = balances["Expenses:Food"]
       [%{amount: cash_balance, currency: "$"}] = balances["Assets:Cash"]
-      assert food_balance == 80.0
-      assert cash_balance == -80.0
+      assert Decimal.eq?(food_balance, Decimal.new(80))
+      assert Decimal.eq?(cash_balance, Decimal.new(-80))
     end
   end
 
@@ -2839,11 +2981,8 @@ defmodule ExLedger.LedgerParserTest do
           equity_posting =
             Enum.find(transaction.postings, fn p -> p.account == "Equity:OpeningBalances" end)
 
-          assert equity_posting.amount == %{
-                   value: -15_000.00,
-                   currency: "$",
-                   currency_position: :leading
-                 }
+          assert Decimal.eq?(equity_posting.amount.value, Decimal.from_float(-15_000.00))
+          assert equity_posting.amount.currency == "$"
 
         {:error, reason} ->
           flunk("Expected successful parse but got error: #{inspect(reason)}")
@@ -2871,11 +3010,8 @@ defmodule ExLedger.LedgerParserTest do
           equity_posting =
             Enum.find(transaction.postings, fn p -> p.account == "Equity:OpeningBalances" end)
 
-          assert equity_posting.amount == %{
-                   value: -15_000.00,
-                   currency: "$",
-                   currency_position: :leading
-                 }
+          assert Decimal.eq?(equity_posting.amount.value, Decimal.from_float(-15_000.00))
+          assert equity_posting.amount.currency == "$"
 
         {:error, reason} ->
           flunk("Expected successful parse but got error: #{inspect(reason)}")
@@ -2919,11 +3055,8 @@ defmodule ExLedger.LedgerParserTest do
           equity_posting =
             Enum.find(t1.postings, fn p -> p.account == "Equity:OpeningBalances" end)
 
-          assert equity_posting.amount == %{
-                   value: -15_000.00,
-                   currency: "$",
-                   currency_position: :leading
-                 }
+          assert Decimal.eq?(equity_posting.amount.value, Decimal.from_float(-15_000.00))
+          assert equity_posting.amount.currency == "$"
 
         {:error, {reason, line, file}} ->
           flunk(
@@ -3125,9 +3258,9 @@ defmodule ExLedger.LedgerParserTest do
       rows = LedgerParser.budget_report(transactions, ~D[2024-01-15])
       rent_row = Enum.find(rows, fn row -> row.account == "Expenses:Rent" end)
 
-      assert rent_row.actual == 900.0
-      assert rent_row.budget == 1000.0
-      assert rent_row.remaining == 100.0
+      assert Decimal.eq?(rent_row.actual, Decimal.new(900))
+      assert Decimal.eq?(rent_row.budget, Decimal.new(1000))
+      assert Decimal.eq?(rent_row.remaining, Decimal.new(100))
     end
 
     test "forecasts balances using periodic transactions" do
@@ -3190,8 +3323,8 @@ defmodule ExLedger.LedgerParserTest do
 
       forecast = LedgerParser.forecast_balance(transactions, 2)
 
-      assert forecast["Assets:Checking"] |> hd() |> Map.get(:amount) == 250.0
-      assert forecast["Income:Salary"] |> hd() |> Map.get(:amount) == -250.0
+      assert Decimal.eq?(forecast["Assets:Checking"] |> hd() |> Map.get(:amount), Decimal.new(250))
+      assert Decimal.eq?(forecast["Income:Salary"] |> hd() |> Map.get(:amount), Decimal.new(-250))
     end
   end
 
@@ -3402,18 +3535,18 @@ defmodule ExLedger.LedgerParserTest do
 
       # January: $100 + $50 = $150 food, -$150 cash
       jan_balances = balances["2024-01"]
-      assert jan_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 150.0
-      assert jan_balances["Assets:Cash"] |> hd() |> Map.get(:amount) == -150.0
+      assert Decimal.eq?(jan_balances["Expenses:Food"] |> hd() |> Map.get(:amount), Decimal.new(150))
+      assert Decimal.eq?(jan_balances["Assets:Cash"] |> hd() |> Map.get(:amount), Decimal.new(-150))
 
       # February: cumulative = Jan + Feb = $150 + $25 = $175 food, -$175 cash
       feb_balances = balances["2024-02"]
-      assert feb_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 175.0
-      assert feb_balances["Assets:Cash"] |> hd() |> Map.get(:amount) == -175.0
+      assert Decimal.eq?(feb_balances["Expenses:Food"] |> hd() |> Map.get(:amount), Decimal.new(175))
+      assert Decimal.eq?(feb_balances["Assets:Cash"] |> hd() |> Map.get(:amount), Decimal.new(-175))
 
       # March: cumulative = Jan + Feb + Mar = $175 + $75 = $250 food, -$250 cash
       mar_balances = balances["2024-03"]
-      assert mar_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 250.0
-      assert mar_balances["Assets:Cash"] |> hd() |> Map.get(:amount) == -250.0
+      assert Decimal.eq?(mar_balances["Expenses:Food"] |> hd() |> Map.get(:amount), Decimal.new(250))
+      assert Decimal.eq?(mar_balances["Assets:Cash"] |> hd() |> Map.get(:amount), Decimal.new(-250))
     end
 
     test "calculates quarterly balances correctly", %{transactions: transactions} do
@@ -3428,8 +3561,8 @@ defmodule ExLedger.LedgerParserTest do
 
       # Q1: all transactions = $100 + $50 + $25 + $75 = $250 food, -$250 cash
       q1_balances = balances["2024 Q1"]
-      assert q1_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 250.0
-      assert q1_balances["Assets:Cash"] |> hd() |> Map.get(:amount) == -250.0
+      assert Decimal.eq?(q1_balances["Expenses:Food"] |> hd() |> Map.get(:amount), Decimal.new(250))
+      assert Decimal.eq?(q1_balances["Assets:Cash"] |> hd() |> Map.get(:amount), Decimal.new(-250))
     end
 
     test "calculates yearly balances correctly", %{transactions: transactions} do
@@ -3444,8 +3577,8 @@ defmodule ExLedger.LedgerParserTest do
 
       # 2024: all transactions = $250 food, -$250 cash
       year_balances = balances["2024"]
-      assert year_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 250.0
-      assert year_balances["Assets:Cash"] |> hd() |> Map.get(:amount) == -250.0
+      assert Decimal.eq?(year_balances["Expenses:Food"] |> hd() |> Map.get(:amount), Decimal.new(250))
+      assert Decimal.eq?(year_balances["Assets:Cash"] |> hd() |> Map.get(:amount), Decimal.new(-250))
     end
 
     test "groups yearly balances without carrying prior years" do
@@ -3454,16 +3587,16 @@ defmodule ExLedger.LedgerParserTest do
           kind: :regular,
           date: ~D[2024-06-01],
           postings: [
-            %{account: "Expenses:Food", amount: %{value: 40.0, currency: "$"}},
-            %{account: "Assets:Cash", amount: %{value: -40.0, currency: "$"}}
+            %{account: "Expenses:Food", amount: %{value: Decimal.new(40), currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: Decimal.new(-40), currency: "$"}}
           ]
         },
         %{
           kind: :regular,
           date: ~D[2025-01-10],
           postings: [
-            %{account: "Expenses:Food", amount: %{value: 60.0, currency: "$"}},
-            %{account: "Assets:Cash", amount: %{value: -60.0, currency: "$"}}
+            %{account: "Expenses:Food", amount: %{value: Decimal.new(60), currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: Decimal.new(-60), currency: "$"}}
           ]
         }
       ]
@@ -3476,12 +3609,12 @@ defmodule ExLedger.LedgerParserTest do
       assert Enum.map(periods, & &1.label) == ["2024", "2025"]
 
       year_2024 = balances["2024"]
-      assert year_2024["Expenses:Food"] |> hd() |> Map.get(:amount) == 40.0
-      assert year_2024["Assets:Cash"] |> hd() |> Map.get(:amount) == -40.0
+      assert Decimal.eq?(year_2024["Expenses:Food"] |> hd() |> Map.get(:amount), Decimal.new(40))
+      assert Decimal.eq?(year_2024["Assets:Cash"] |> hd() |> Map.get(:amount), Decimal.new(-40))
 
       year_2025 = balances["2025"]
-      assert year_2025["Expenses:Food"] |> hd() |> Map.get(:amount) == 60.0
-      assert year_2025["Assets:Cash"] |> hd() |> Map.get(:amount) == -60.0
+      assert Decimal.eq?(year_2025["Expenses:Food"] |> hd() |> Map.get(:amount), Decimal.new(60))
+      assert Decimal.eq?(year_2025["Assets:Cash"] |> hd() |> Map.get(:amount), Decimal.new(-60))
     end
 
     test "applies account filter correctly", %{transactions: transactions} do
@@ -3495,7 +3628,7 @@ defmodule ExLedger.LedgerParserTest do
       jan_balances = balances["2024-01"]
       assert Map.has_key?(jan_balances, "Expenses:Food")
       refute Map.has_key?(jan_balances, "Assets:Cash")
-      assert jan_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 150.0
+      assert Decimal.eq?(jan_balances["Expenses:Food"] |> hd() |> Map.get(:amount), Decimal.new(150))
     end
 
     test "respects start_date parameter" do
@@ -3588,15 +3721,15 @@ defmodule ExLedger.LedgerParserTest do
       usd_food = Enum.find(food_expenses, fn a -> a.currency == "$" end)
       eur_food = Enum.find(food_expenses, fn a -> a.currency == "EUR" end)
 
-      assert usd_food.amount == 100.0
-      assert eur_food.amount == 50.0
+      assert Decimal.eq?(usd_food.amount, Decimal.from_float(100.0))
+      assert Decimal.eq?(eur_food.amount, Decimal.from_float(50.0))
 
       cash_balances = jan_balances["Assets:Cash"]
       usd_cash = Enum.find(cash_balances, fn a -> a.currency == "$" end)
       eur_cash = Enum.find(cash_balances, fn a -> a.currency == "EUR" end)
 
-      assert usd_cash.amount == -100.0
-      assert eur_cash.amount == -50.0
+      assert Decimal.eq?(usd_cash.amount, Decimal.from_float(-100.0))
+      assert Decimal.eq?(eur_cash.amount, Decimal.from_float(-50.0))
     end
 
     test "filters out non-regular transactions" do
@@ -3605,8 +3738,8 @@ defmodule ExLedger.LedgerParserTest do
           kind: :regular,
           date: ~D[2024-01-15],
           postings: [
-            %{account: "Expenses:Food", amount: %{value: 100.0, currency: "$"}},
-            %{account: "Assets:Cash", amount: %{value: -100.0, currency: "$"}}
+            %{account: "Expenses:Food", amount: %{value: Decimal.from_float(100.0), currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: Decimal.from_float(-100.0), currency: "$"}}
           ]
         },
         %{
@@ -3614,8 +3747,8 @@ defmodule ExLedger.LedgerParserTest do
           date: nil,
           period: "Monthly",
           postings: [
-            %{account: "Expenses:Rent", amount: %{value: 1000.0, currency: "$"}},
-            %{account: "Assets:Cash", amount: %{value: -1000.0, currency: "$"}}
+            %{account: "Expenses:Rent", amount: %{value: Decimal.from_float(1000.0), currency: "$"}},
+            %{account: "Assets:Cash", amount: %{value: Decimal.from_float(-1000.0), currency: "$"}}
           ]
         },
         %{
@@ -3635,7 +3768,7 @@ defmodule ExLedger.LedgerParserTest do
       jan_balances = balances["2024-01"]
 
       # Should only include regular transaction
-      assert jan_balances["Expenses:Food"] |> hd() |> Map.get(:amount) == 100.0
+      assert Decimal.eq?(jan_balances["Expenses:Food"] |> hd() |> Map.get(:amount), Decimal.new(100))
       refute Map.has_key?(jan_balances, "Expenses:Rent")
       refute Map.has_key?(jan_balances, "Expenses:Fee")
     end
@@ -3695,8 +3828,8 @@ defmodule ExLedger.LedgerParserTest do
 
       # December should have cumulative balance of all 365 transactions
       dec_balances = balances["2024-12"]
-      assert dec_balances["Expenses:Daily"] |> hd() |> Map.get(:amount) == 3650.0
-      assert dec_balances["Assets:Cash"] |> hd() |> Map.get(:amount) == -3650.0
+      assert Decimal.eq?(dec_balances["Expenses:Daily"] |> hd() |> Map.get(:amount), Decimal.new(3650))
+      assert Decimal.eq?(dec_balances["Assets:Cash"] |> hd() |> Map.get(:amount), Decimal.new(-3650))
     end
   end
 

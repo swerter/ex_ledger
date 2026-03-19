@@ -7,6 +7,7 @@ defmodule ExLedger.Parser.Transaction do
   """
 
   alias ExLedger.Parser.Core
+  import ExLedger.Parser.Helpers, only: [to_decimal: 1]
 
   @amount_regex Core.amount_regex()
 
@@ -394,11 +395,14 @@ defmodule ExLedger.Parser.Transaction do
   defp posting_currencies(postings) do
     postings
     |> Enum.filter(fn p ->
-      !is_nil(p.amount) and p.amount.value != 0 and p.amount.value != 0.0
+      !is_nil(p.amount) and not decimal_zero?(p.amount.value)
     end)
     |> Enum.map(fn p -> p.amount.currency end)
     |> Enum.uniq()
   end
+
+  defp decimal_zero?(%Decimal{} = value), do: Decimal.eq?(value, Decimal.new(0))
+  defp decimal_zero?(value) when is_number(value), do: value == 0
 
   defp apply_missing_amount(postings) do
     # Calculate total using effective values (considering cost)
@@ -406,7 +410,8 @@ defmodule ExLedger.Parser.Transaction do
       postings
       |> Enum.filter(fn p -> !is_nil(p.amount) end)
       |> Enum.map(&posting_effective_value/1)
-      |> Enum.sum()
+      |> Enum.map(&to_decimal/1)
+      |> Enum.reduce(Decimal.new(0), &Decimal.add/2)
 
     # Find the cost currency if any posting has a cost
     {currency, currency_position} = find_balance_currency(postings)
@@ -421,8 +426,8 @@ defmodule ExLedger.Parser.Transaction do
 
     if not is_nil(cost) do
       case cost.type do
-        :per_unit -> amount.value * cost.amount.value
-        :total -> cost.amount.value
+        :per_unit -> Decimal.mult(to_decimal(amount.value), to_decimal(cost.amount.value))
+        :total -> to_decimal(cost.amount.value)
       end
     else
       amount.value
@@ -448,13 +453,22 @@ defmodule ExLedger.Parser.Transaction do
     end
   end
 
-  @spec fill_missing_amount(Core.posting(), float(), String.t() | nil, :leading | :trailing | nil) ::
+  @spec fill_missing_amount(
+          Core.posting(),
+          Decimal.t(),
+          String.t() | nil,
+          :leading | :trailing | nil
+        ) ::
           Core.posting()
   defp fill_missing_amount(posting, total, currency, currency_position) do
     if is_nil(posting.amount) do
       %{
         posting
-        | amount: %{value: -total, currency: currency, currency_position: currency_position}
+        | amount: %{
+            value: Decimal.negate(total),
+            currency: currency,
+            currency_position: currency_position
+          }
       }
     else
       posting
@@ -471,8 +485,9 @@ defmodule ExLedger.Parser.Transaction do
 
   defp validate_balanced_postings(postings) do
     currency_totals = sum_postings_by_currency(postings)
+    zero = Decimal.new(0)
 
-    if Enum.all?(currency_totals, fn {_currency, total} -> abs(total) < 0.01 end) do
+    if Enum.all?(currency_totals, fn {_currency, total} -> Decimal.eq?(total, zero) end) do
       :ok
     else
       validate_multi_currency(currency_totals)
@@ -493,7 +508,8 @@ defmodule ExLedger.Parser.Transaction do
   defp sum_postings_by_currency(postings) do
     Enum.reduce(postings, %{}, fn posting, acc ->
       {currency, value} = posting_balance_contribution(posting)
-      Map.update(acc, currency, value, &(&1 + value))
+      value = to_decimal(value)
+      Map.update(acc, currency, value, &Decimal.add(&1, value))
     end)
   end
 
@@ -504,8 +520,8 @@ defmodule ExLedger.Parser.Transaction do
     if not is_nil(cost) do
       effective_value =
         case cost.type do
-          :per_unit -> amount.value * cost.amount.value
-          :total -> cost.amount.value
+          :per_unit -> Decimal.mult(to_decimal(amount.value), to_decimal(cost.amount.value))
+          :total -> to_decimal(cost.amount.value)
         end
 
       {cost.amount.currency, effective_value}

@@ -7,10 +7,6 @@ defmodule ExLedger.Exchange do
 
   ## Limitations
 
-  - **Floating point precision**: Calculations use native floats, which may
-    accumulate small precision errors. For high-precision financial reporting,
-    consider rounding results appropriately.
-
   - **Single-hop transitive paths**: When no direct conversion exists (e.g., EUR→CHF),
     the module attempts conversion through one intermediate currency (EUR→USD→CHF).
     Multi-hop paths (EUR→USD→GBP→CHF) are not supported.
@@ -20,8 +16,9 @@ defmodule ExLedger.Exchange do
   """
 
   alias ExLedger.Parser.Price
+  import ExLedger.Parser.Helpers, only: [to_decimal: 1]
 
-  @type amount :: %{value: float(), currency: String.t() | nil, currency_position: atom() | nil}
+  @type amount :: %{value: Decimal.t(), currency: String.t() | nil, currency_position: atom() | nil}
   @type posting :: map()
   @type transaction :: map()
   @type price_db :: Price.price_db()
@@ -165,19 +162,21 @@ defmodule ExLedger.Exchange do
 
   Attempts direct conversion first, then tries transitive paths.
   """
-  @spec convert_value(float(), String.t(), String.t(), Date.t(), price_db()) ::
-          {:ok, float()} | {:error, {:no_conversion_path, String.t(), String.t()}}
+  @spec convert_value(Decimal.t() | number(), String.t(), String.t(), Date.t(), price_db()) ::
+          {:ok, Decimal.t()} | {:error, {:no_conversion_path, String.t(), String.t()}}
   def convert_value(value, from_currency, to_currency, date, price_db) do
+    value = to_decimal(value)
+
     # Try direct conversion
     case Price.lookup_price(from_currency, to_currency, date, price_db) do
       {:ok, rate} ->
-        {:ok, value * rate}
+        {:ok, Decimal.mult(value, to_decimal(rate))}
 
       {:error, :no_price_found} ->
         # Try inverse conversion (if we have TO->FROM, use 1/rate)
         case Price.lookup_price(to_currency, from_currency, date, price_db) do
           {:ok, rate} ->
-            {:ok, value / rate}
+            {:ok, Decimal.div(value, to_decimal(rate))}
 
           {:error, :no_price_found} ->
             # Try transitive conversion through intermediate currencies
@@ -205,7 +204,7 @@ defmodule ExLedger.Exchange do
       Enum.find_value(all_intermediates, fn intermediate ->
         with {:ok, rate1} <- get_rate(from_currency, intermediate, date, price_db),
              {:ok, rate2} <- get_rate(intermediate, to_currency, date, price_db) do
-          {:ok, value * rate1 * rate2}
+          {:ok, value |> Decimal.mult(to_decimal(rate1)) |> Decimal.mult(to_decimal(rate2))}
         else
           _ -> nil
         end
@@ -221,11 +220,11 @@ defmodule ExLedger.Exchange do
   defp get_rate(from, to, date, price_db) do
     case Price.lookup_price(from, to, date, price_db) do
       {:ok, rate} ->
-        {:ok, rate}
+        {:ok, to_decimal(rate)}
 
       {:error, :no_price_found} ->
         case Price.lookup_price(to, from, date, price_db) do
-          {:ok, rate} -> {:ok, 1.0 / rate}
+          {:ok, rate} -> {:ok, Decimal.div(Decimal.new(1), to_decimal(rate))}
           error -> error
         end
     end
@@ -238,7 +237,7 @@ defmodule ExLedger.Exchange do
   """
   @spec can_convert?(String.t(), String.t(), Date.t(), price_db()) :: boolean()
   def can_convert?(from_currency, to_currency, date, price_db) do
-    case convert_value(1.0, from_currency, to_currency, date, price_db) do
+    case convert_value(Decimal.new(1), from_currency, to_currency, date, price_db) do
       {:ok, _} -> true
       {:error, _} -> false
     end

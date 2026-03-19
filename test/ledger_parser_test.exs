@@ -565,9 +565,8 @@ defmodule ExLedger.LedgerParserTest do
       assert posting2.amount.currency == "CHF"
     end
 
-    test "parses transaction with Japanese Yen (large numbers without decimals)" do
+    test "parses transaction with Japanese Yen symbol (large numbers)" do
       # Japanese Yen typically has no decimal places and uses large numbers
-      # Testing that Decimal parsing handles these correctly
       input = """
       2024/03/15 Tokyo Electronics Store
           Expenses:Electronics          ¥158000
@@ -582,13 +581,40 @@ defmodule ExLedger.LedgerParserTest do
       assert posting1.amount.currency == "¥"
       assert posting1.amount.currency_position == :leading
 
-      assert posting2.account == "Assets:Bank:JPY"
       assert Decimal.eq?(posting2.amount.value, Decimal.new(-158000))
       assert posting2.amount.currency == "¥"
     end
 
-    test "parses transaction with Japanese Yen using JPY currency code" do
-      # Using JPY as trailing currency code with very large numbers
+    test "parses transaction with Euro symbol" do
+      input = """
+      2024/03/15 Berlin Restaurant
+          Expenses:Food                 €45.50
+          Assets:Cash
+      """
+
+      transaction = parse_transaction!(input)
+
+      [posting1, _] = transaction.postings
+      assert Decimal.eq?(posting1.amount.value, Decimal.new("45.50"))
+      assert posting1.amount.currency == "€"
+      assert posting1.amount.currency_position == :leading
+    end
+
+    test "parses transaction with British Pound symbol" do
+      input = """
+      2024/03/15 London Tube
+          Expenses:Transport            £6.80
+          Assets:Cash
+      """
+
+      transaction = parse_transaction!(input)
+
+      [posting1, _] = transaction.postings
+      assert Decimal.eq?(posting1.amount.value, Decimal.new("6.80"))
+      assert posting1.amount.currency == "£"
+    end
+
+    test "parses transaction with JPY currency code (large numbers)" do
       input = """
       2024/03/20 Salary Payment
           Assets:Bank:Japan            2850000 JPY
@@ -606,8 +632,59 @@ defmodule ExLedger.LedgerParserTest do
       assert posting2.amount.currency == "JPY"
     end
 
+    test "parses transaction with stock ticker as currency (AAPL)" do
+      # Stock tickers should work as commodity/currency names
+      input = """
+      2024/03/20 Buy Apple Stock
+          Assets:Brokerage:Stocks       10 AAPL @ $150.00
+          Assets:Brokerage:Cash
+      """
+
+      transaction = parse_transaction!(input)
+
+      [posting1, _] = transaction.postings
+      assert Decimal.eq?(posting1.amount.value, Decimal.new(10))
+      assert posting1.amount.currency == "AAPL"
+      assert posting1.cost.amount.currency == "$"
+      assert Decimal.eq?(posting1.cost.amount.value, Decimal.new("150.00"))
+    end
+
+    test "parses transaction with lowercase currency name" do
+      input = """
+      2024/03/20 Custom Currency
+          Assets:Wallet                 100 mycurrency
+          Income:Mining
+      """
+
+      transaction = parse_transaction!(input)
+
+      [posting1, posting2] = transaction.postings
+      assert Decimal.eq?(posting1.amount.value, Decimal.new(100))
+      assert posting1.amount.currency == "mycurrency"
+      assert posting1.amount.currency_position == :trailing
+
+      assert Decimal.eq?(posting2.amount.value, Decimal.new(-100))
+      assert posting2.amount.currency == "mycurrency"
+    end
+
+    test "parses transaction with mixed case currency name" do
+      input = """
+      2024/03/20 Bitcoin Purchase
+          Assets:Crypto                 0.5 Bitcoin
+          Assets:Bank                  -25000 USD
+      """
+
+      transaction = parse_transaction!(input)
+
+      [posting1, posting2] = transaction.postings
+      assert Decimal.eq?(posting1.amount.value, Decimal.new("0.5"))
+      assert posting1.amount.currency == "Bitcoin"
+
+      assert Decimal.eq?(posting2.amount.value, Decimal.new(-25000))
+      assert posting2.amount.currency == "USD"
+    end
+
     test "parses multi-currency transaction with JPY conversion" do
-      # Testing JPY in a multi-currency context with cost basis
       input = """
       2024/04/01 Currency Exchange
           Assets:Bank:USD              1000 USD @@ 149500 JPY

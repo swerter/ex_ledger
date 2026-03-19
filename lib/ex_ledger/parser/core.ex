@@ -98,7 +98,9 @@ defmodule ExLedger.Parser.Core do
           | {:include_outside_base, String.t()}
           | parse_error_detail()
 
-  @amount_regex ~r/(?:\$|[A-Z]{1,5})?\s*[-+]?\d+(?:\.\d{1,2})?(?:\s*(?:\$|[A-Z]{1,5}))?/
+  # Matches amounts for detecting where account names end and amounts begin.
+  # Supports Unicode currency symbols ($, €, £, ¥, etc.) and uppercase currency codes.
+  @amount_regex ~r/(?:[$€£¥₹₽₿₩฿₪₴₦₱₡₲₵₭₮¢]|[A-Z]{1,5})?\s*[-+]?\d+(?:\.\d{1,2})?(?:\s*(?:[$€£¥₹₽₿₩฿₪₴₦₱₡₲₵₭₮¢]|[A-Z]{1,5}))?/u
 
   @doc """
   Regex pattern for matching amounts in ledger format.
@@ -222,7 +224,11 @@ defmodule ExLedger.Parser.Core do
   sign = ascii_char([?-]) |> replace(:negative)
 
   # Currency symbol or code
-  currency_symbol = ascii_char([?$]) |> replace("$")
+  # Support common currency symbols: $ € £ ¥ ₹ ₽ ₿ ₩ ฿ ₪ ₴ ₦ ₱ ₡ ₲ ₵ ₭ ₮ ₯ ₰ ₳ ₸ ₺ ₼ ₾ ¢
+  currency_symbol =
+    utf8_char([?$, ?€, ?£, ?¥, ?₹, ?₽, ?₿, ?₩, ?฿, ?₪, ?₴, ?₦, ?₱, ?₡, ?₲, ?₵, ?₭, ?₮, ?¢])
+    |> reduce({:chars_to_currency_symbol, []})
+
   currency_code = ascii_string([?A..?Z, ?a..?z], min: 1)
 
   currency =
@@ -517,6 +523,12 @@ defmodule ExLedger.Parser.Core do
   defp chars_to_string(chars) do
     chars
     |> List.to_string()
+  end
+
+  # Converts a single Unicode codepoint to a string (for currency symbols)
+  @spec chars_to_currency_symbol([integer()]) :: String.t()
+  defp chars_to_currency_symbol([codepoint]) do
+    <<codepoint::utf8>>
   end
 
   @spec flatten_integer_parts([String.t()]) :: integer()

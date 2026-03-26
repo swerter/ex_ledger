@@ -158,7 +158,11 @@ defmodule ExLedger.Parser.BalanceAssertions do
 
   defp update_running_balance(balances, posting) do
     account = posting.account
-    currency = posting.amount.currency || "default"
+
+    # When the posting amount has no currency but there's an assertion with a currency,
+    # inherit the currency from the assertion. This allows "0 = 100 CHF" to work
+    # correctly (the 0 is treated as 0 CHF, not added to a "default" bucket).
+    currency = infer_posting_currency(posting)
 
     # For balance assertions, track the raw commodity amount (not the cost/effective value)
     # e.g., "10 AAPL @ 150 USD" should add 10 to the AAPL balance, not 1500
@@ -169,6 +173,17 @@ defmodule ExLedger.Parser.BalanceAssertions do
     new_balance = Decimal.add(current, value)
 
     Map.put(balances, account, Map.put(account_balances, currency, new_balance))
+  end
+
+  # Infer the currency for a posting amount. If the amount has an explicit currency,
+  # use it. Otherwise, if there's an assertion with a currency, inherit it.
+  # Falls back to "default" if neither has a currency.
+  defp infer_posting_currency(%{amount: amount, assertion: assertion}) do
+    cond do
+      amount.currency != nil -> amount.currency
+      assertion != nil and assertion.currency != nil -> assertion.currency
+      true -> "default"
+    end
   end
 
   @doc """

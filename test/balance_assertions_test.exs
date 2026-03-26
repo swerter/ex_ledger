@@ -158,6 +158,126 @@ defmodule ExLedger.BalanceAssertionsTest do
     end
   end
 
+  describe "bare amount inheriting currency from assertion" do
+    test "bare zero inherits currency from trailing currency assertion" do
+      # When posting amount is bare "0" but assertion has a currency,
+      # the assertion should check the correct currency bucket
+      input = """
+      2026/01/01 Opening Balance
+          Assets:Cash  100 CHF
+          Equity:Opening  -100 CHF
+
+      2026/01/15 Check Balance
+          Assets:Cash  0 = 100 CHF
+          Equity:Adjustments  0
+      """
+
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      assert :ok = BalanceAssertions.validate_assertions(transactions)
+    end
+
+    test "bare zero inherits currency from leading currency assertion" do
+      input = """
+      2026/01/01 Opening Balance
+          Assets:Cash  $100.00
+          Equity:Opening  -$100.00
+
+      2026/01/15 Check Balance
+          Assets:Cash  0 = $100.00
+          Equity:Adjustments  0
+      """
+
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      assert :ok = BalanceAssertions.validate_assertions(transactions)
+    end
+
+    test "bare zero with assertion fails when balance is wrong" do
+      input = """
+      2026/01/01 Opening Balance
+          Assets:Cash  100 CHF
+          Equity:Opening  -100 CHF
+
+      2026/01/15 Wrong Balance Check
+          Assets:Cash  0 = 200 CHF
+          Equity:Adjustments  0
+      """
+
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      assert {:error, [failure]} = BalanceAssertions.validate_assertions(transactions)
+
+      assert failure.account == "Assets:Cash"
+      assert Decimal.eq?(failure.expected.value, Decimal.new(200))
+      assert Decimal.eq?(failure.actual.value, Decimal.new(100))
+    end
+
+    test "bare zero is treated as zero of assertion currency" do
+      # When there's no prior balance in the currency, bare 0 with assertion should
+      # add 0 to that currency's balance (not to "default" bucket)
+      input = """
+      2026/01/15 Assert Zero Balance
+          Assets:NewAccount  0 = 0 CHF
+          Equity:Adjustments  0
+      """
+
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      assert :ok = BalanceAssertions.validate_assertions(transactions)
+    end
+
+    test "bare zero assertion fails when account has unexpected balance" do
+      input = """
+      2026/01/01 Opening Balance
+          Assets:Cash  50 CHF
+          Equity:Opening  -50 CHF
+
+      2026/01/15 Assert Zero Balance (should fail)
+          Assets:Cash  0 = 0 CHF
+          Equity:Adjustments  0
+      """
+
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      assert {:error, [failure]} = BalanceAssertions.validate_assertions(transactions)
+
+      assert failure.account == "Assets:Cash"
+      assert Decimal.eq?(failure.expected.value, Decimal.new(0))
+      assert Decimal.eq?(failure.actual.value, Decimal.new(50))
+    end
+
+    test "bare non-zero amount inherits currency from assertion" do
+      # Even non-zero bare amounts should inherit currency from assertion
+      input = """
+      2026/01/01 Opening Balance
+          Assets:Cash  100 CHF
+          Equity:Opening  -100 CHF
+
+      2026/01/15 Add and Check
+          Assets:Cash  50 = 150 CHF
+          Expenses:Misc  -50 CHF
+      """
+
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      assert :ok = BalanceAssertions.validate_assertions(transactions)
+    end
+
+    test "explicit amount currency takes precedence over assertion currency" do
+      # When amount has explicit currency, it should NOT inherit from assertion.
+      # Here we add 0 CHF but assert USD balance - the 0 should go to CHF bucket,
+      # not USD bucket (even though assertion is in USD).
+      input = """
+      2026/01/01 Opening Balance
+          Assets:Cash  100 USD
+          Equity:Opening  -100 USD
+
+      2026/01/15 Add CHF but assert USD
+          Assets:Cash  0 CHF = 100 USD
+          Equity:Adjustments  0
+      """
+
+      {:ok, %{transactions: transactions}} = LedgerParser.parse_ledger(input, skip_assertions: true)
+      # This should pass: 0 is added to CHF bucket (explicit), assertion checks USD bucket (100)
+      assert :ok = BalanceAssertions.validate_assertions(transactions)
+    end
+  end
+
   describe "multi-currency assertions" do
     test "validates assertion for specific currency only" do
       input = """

@@ -529,4 +529,55 @@ defmodule ExLedger.ParserEdgeCasesTest do
       assert txn.date == ~D[2024-01-01]
     end
   end
+
+  # ==========================================================================
+  # Inline Comments on Postings
+  # ==========================================================================
+
+  describe "inline comments on postings" do
+    test "parses posting with comment after amount" do
+      input = """
+      2024/01/21 Abc
+          2 Passiven:20 Kreditoren:2010 Kreditor                    CHF 460.00 ;; my comment
+          1 Aktiven:10 Umlaufvermögen:1098 Something
+      """
+
+      txn = parse_transaction!(input)
+
+      assert length(txn.postings) == 2
+      [posting1, posting2] = txn.postings
+
+      # First posting with explicit amount and comment
+      assert posting1.account == "2 Passiven:20 Kreditoren:2010 Kreditor"
+      assert posting1.amount.currency == "CHF"
+      assert Decimal.eq?(posting1.amount.value, Decimal.new("460.00"))
+
+      # Second posting gets balancing amount
+      assert posting2.account == "1 Aktiven:10 Umlaufvermögen:1098 Something"
+      assert Decimal.eq?(posting2.amount.value, Decimal.new("-460.00"))
+    end
+
+    test "parses transaction with trailing comment line after postings" do
+      input = """
+      2024/01/21 Abc
+          2 Passiven:20 Kreditoren:2010 Kreditor                    CHF 460.00 ;; my comment
+          1 Aktiven:10 Umlaufvermögen:1098 Something
+          ;; Pensionskasse
+      """
+
+      txn = parse_transaction!(input)
+
+      assert length(txn.postings) == 2
+      [posting1, posting2] = txn.postings
+
+      # First posting with explicit amount
+      assert posting1.account == "2 Passiven:20 Kreditoren:2010 Kreditor"
+      assert posting1.amount.currency == "CHF"
+      assert Decimal.eq?(posting1.amount.value, Decimal.new("460.00"))
+
+      # Second posting gets balancing amount
+      assert posting2.account == "1 Aktiven:10 Umlaufvermögen:1098 Something"
+      assert Decimal.eq?(posting2.amount.value, Decimal.new("-460.00"))
+    end
+  end
 end

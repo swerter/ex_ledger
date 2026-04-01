@@ -416,6 +416,13 @@ defmodule ExLedger.Parser.Core do
     ])
     |> ignore(optional(string("\n")))
 
+  # Trailing comment line (ignored, for comments after all postings)
+  trailing_comment_line =
+    ignore(indentation)
+    |> ignore(ascii_string([?;], min: 1))
+    |> ignore(utf8_string([not: ?\n], min: 0))
+    |> ignore(optional(string("\n")))
+
   # Posting with notes
   posting =
     times(note_line, min: 0)
@@ -439,6 +446,7 @@ defmodule ExLedger.Parser.Core do
     transaction_header
     |> times(transaction_metadata_line, min: 0)
     |> times(posting, min: 2)
+    |> times(trailing_comment_line, min: 0)
     |> reduce({:build_transaction, []})
   )
 
@@ -447,6 +455,7 @@ defmodule ExLedger.Parser.Core do
     automated_header
     |> times(transaction_metadata_line, min: 0)
     |> times(posting, min: 1)
+    |> times(trailing_comment_line, min: 0)
     |> reduce({:build_transaction, []})
   )
 
@@ -455,6 +464,7 @@ defmodule ExLedger.Parser.Core do
     periodic_header
     |> times(transaction_metadata_line, min: 0)
     |> times(posting, min: 1)
+    |> times(trailing_comment_line, min: 0)
     |> reduce({:build_transaction, []})
   )
 

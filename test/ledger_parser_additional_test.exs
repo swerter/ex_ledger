@@ -161,7 +161,8 @@ defmodule ExLedger.LedgerParserAdditionalTest do
       assert {:error, :insufficient_postings} = LedgerParser.parse_transaction(input)
     end
 
-    test "returns unexpected_input when trailing content remains" do
+    test "accepts trailing comment lines after postings" do
+      # ledger-cli accepts trailing comments after postings, so we should too
       input = """
       2024/01/01 Sample
           Assets:Cash  $1.00
@@ -169,7 +170,8 @@ defmodule ExLedger.LedgerParserAdditionalTest do
           ; trailing note
       """
 
-      assert {:error, {:unexpected_input, _}} = LedgerParser.parse_transaction(input)
+      assert {:ok, transaction} = LedgerParser.parse_transaction(input)
+      assert length(transaction.postings) == 2
     end
 
     test "returns parse_error for invalid dates" do

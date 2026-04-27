@@ -247,9 +247,11 @@ defmodule ExLedger.Parser.Core do
     |> concat(ascii_char([?0..?9]))
     |> reduce({:chars_to_string, []})
 
+  thousands_separator = choice([string(","), string("_")])
+
   integer_with_commas =
     ascii_string([?0..?9], min: 1)
-    |> repeat(ignore(string(",")) |> concat(three_digits))
+    |> repeat(ignore(thousands_separator) |> concat(three_digits))
     |> reduce({:flatten_integer_parts, []})
     |> unwrap_and_tag(:integer_part)
 

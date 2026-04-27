@@ -801,6 +801,80 @@ defmodule ExLedger.LedgerParserTransactionTest do
       assert posting2.amount.currency == "CHF"
     end
 
+    test "parses multi-currency opening balances with empty equity posting" do
+      input = """
+      2025/01/01 Opening Balances
+          Assets:Bank:Checking  100.00 CHF
+          Assets:Wise:USD        50.00 USD
+          Equity:Opening:Balances
+      """
+
+      transaction = parse_transaction!(input)
+
+      assert transaction.date == ~D[2025-01-01]
+      assert transaction.payee == "Opening Balances"
+      # Empty equity posting expands into one posting per currency
+      assert length(transaction.postings) == 4
+
+      [p1, p2, p3, p4] = transaction.postings
+
+      assert p1.account == "Assets:Bank:Checking"
+      assert Decimal.eq?(p1.amount.value, Decimal.new("100.00"))
+      assert p1.amount.currency == "CHF"
+
+      assert p2.account == "Assets:Wise:USD"
+      assert Decimal.eq?(p2.amount.value, Decimal.new("50.00"))
+      assert p2.amount.currency == "USD"
+
+      assert p3.account == "Equity:Opening:Balances"
+      assert p4.account == "Equity:Opening:Balances"
+
+      equity_currencies = Enum.map([p3, p4], & &1.amount.currency) |> Enum.sort()
+      assert equity_currencies == ["CHF", "USD"]
+
+      equity_chf = Enum.find([p3, p4], &(&1.amount.currency == "CHF"))
+      equity_usd = Enum.find([p3, p4], &(&1.amount.currency == "USD"))
+      assert Decimal.eq?(equity_chf.amount.value, Decimal.new("-100.00"))
+      assert Decimal.eq?(equity_usd.amount.value, Decimal.new("-50.00"))
+    end
+
+    test "parses multi-currency opening balances with underscore-separated amounts" do
+      input = """
+      2025/01/01 Opening Balances
+          Assets:Bank:Checking  85_000.00 CHF
+          Assets:Cash              500.00 CHF
+          Assets:Wise:USD        8_000.00 USD
+          Equity:Opening:Balances
+      """
+
+      transaction = parse_transaction!(input)
+
+      assert transaction.date == ~D[2025-01-01]
+      assert transaction.payee == "Opening Balances"
+      assert length(transaction.postings) == 5
+
+      [p1, p2, p3, p4, p5] = transaction.postings
+
+      assert p1.account == "Assets:Bank:Checking"
+      assert Decimal.eq?(p1.amount.value, Decimal.new("85000.00"))
+      assert p1.amount.currency == "CHF"
+
+      assert p2.account == "Assets:Cash"
+      assert Decimal.eq?(p2.amount.value, Decimal.new("500.00"))
+      assert p2.amount.currency == "CHF"
+
+      assert p3.account == "Assets:Wise:USD"
+      assert Decimal.eq?(p3.amount.value, Decimal.new("8000.00"))
+      assert p3.amount.currency == "USD"
+
+      equity = [p4, p5]
+      assert Enum.all?(equity, &(&1.account == "Equity:Opening:Balances"))
+
+      by_currency = Map.new(equity, &{&1.amount.currency, &1.amount.value})
+      assert Decimal.eq?(by_currency["CHF"], Decimal.new("-85500.00"))
+      assert Decimal.eq?(by_currency["USD"], Decimal.new("-8000.00"))
+    end
+
     test "parses transaction with single-digit decimal amounts" do
       # Use balanced single currency to test decimal parsing
       input = """

@@ -75,7 +75,7 @@ defmodule ExLedger.LedgerParserBalanceTest do
       assert balanced.currency == "$"
     end
 
-    test "does not auto-balance multi-currency postings with a missing amount" do
+    test "expands a missing multi-currency posting into one posting per currency" do
       postings = [
         %{account: "Assets:Cash", amount: %{value: Decimal.from_float(10.00), currency: "USD"}},
         %{account: "Expenses:Fees", amount: %{value: Decimal.from_float(-5.00), currency: "CHF"}},
@@ -84,7 +84,14 @@ defmodule ExLedger.LedgerParserBalanceTest do
 
       result = LedgerParser.balance_postings(postings)
 
-      assert Enum.at(result, 2).amount == nil
+      assert length(result) == 4
+      [_, _, equity1, equity2] = result
+      assert equity1.account == "Equity:Opening"
+      assert equity2.account == "Equity:Opening"
+
+      by_currency = Map.new([equity1, equity2], &{&1.amount.currency, &1.amount.value})
+      assert Decimal.eq?(by_currency["USD"], Decimal.from_float(-10.00))
+      assert Decimal.eq?(by_currency["CHF"], Decimal.from_float(5.00))
     end
   end
 

@@ -119,8 +119,11 @@ defmodule ExLedger.Parser.Transaction do
         _ -> balanceable
       end
 
-    # Reconstruct postings in original order using indices
-    {result, _} =
+    # Reconstruct postings in original order using indices.
+    # `balanced` may contain more postings than `balanceable` when the
+    # multi-currency expansion turns one empty posting into several — append
+    # any leftover balanced postings after the loop.
+    {result, leftover} =
       Enum.map_reduce(postings, balanced, fn posting, remaining_balanced ->
         idx = Enum.find_index(postings, fn p -> p == posting end)
 
@@ -135,7 +138,7 @@ defmodule ExLedger.Parser.Transaction do
         end
       end)
 
-    result
+    result ++ leftover
   end
 
   @doc """
@@ -389,9 +392,76 @@ defmodule ExLedger.Parser.Transaction do
     currencies = posting_currencies(postings)
 
     if Enum.count(currencies) > 1 do
-      postings
+      expand_missing_amount_for_currencies(postings)
     else
       apply_missing_amount(postings)
+    end
+  end
+
+  # When a single posting has no amount and the other postings span multiple
+  # currencies, ledger-cli expands the empty posting into one posting per
+  # currency so each currency balances to zero independently. This is the
+  # standard pattern for opening balances spanning multiple currencies.
+  defp expand_missing_amount_for_currencies(postings) do
+    case Enum.find_index(postings, fn p -> is_nil(p.amount) end) do
+      nil ->
+        postings
+
+      nil_index ->
+        nil_posting = Enum.at(postings, nil_index)
+
+        currency_totals =
+          postings
+          |> Enum.filter(fn p -> not is_nil(p.amount) end)
+          |> sum_postings_by_currency()
+
+        expansion =
+          Enum.map(currency_totals, fn {currency, total} ->
+            position = currency_position_for(postings, currency)
+
+            %{
+              nil_posting
+              | amount: %{
+                  value: Decimal.negate(total),
+                  currency: currency,
+                  currency_position: position
+                }
+            }
+          end)
+
+        {before_postings, [_ | after_postings]} = Enum.split(postings, nil_index)
+        before_postings ++ expansion ++ after_postings
+    end
+  end
+
+  defp currency_position_for(postings, currency) do
+    postings
+    |> Enum.find(fn p ->
+      not is_nil(p.amount) and amount_currency_matches?(p, currency)
+    end)
+    |> case do
+      nil -> nil
+      posting -> currency_position_from_posting(posting, currency)
+    end
+  end
+
+  defp amount_currency_matches?(%{amount: amount} = posting, currency) do
+    cost = Map.get(posting, :cost)
+
+    if not is_nil(cost) do
+      cost.amount.currency == currency
+    else
+      amount.currency == currency
+    end
+  end
+
+  defp currency_position_from_posting(%{amount: amount} = posting, currency) do
+    cost = Map.get(posting, :cost)
+
+    if not is_nil(cost) and cost.amount.currency == currency do
+      Map.get(cost.amount, :currency_position)
+    else
+      Map.get(amount, :currency_position)
     end
   end
 

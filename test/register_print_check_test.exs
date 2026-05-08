@@ -28,6 +28,95 @@ defmodule ExLedger.RegisterPrintCheckTest do
     refute output =~ "Expenses:Food"
   end
 
+  test "balance applies automated transactions by default" do
+    ledger = """
+    = /^Expenses:Food/
+        (Budget:Food)  -1
+
+    2024/01/02 Lunch
+        Expenses:Food  $5
+        Assets:Cash
+    """
+
+    file = write_fixture("balance_auto_sample.ledger", ledger)
+
+    output =
+      capture_io(fn ->
+        ExLedger.CLI.main(["-f", file, "balance"])
+      end)
+
+    assert output =~ "Budget:Food"
+    assert output =~ "$-5.00"
+  end
+
+  test "balance --no-auto disables automated transaction effects" do
+    ledger = """
+    = /^Expenses:Food/
+        (Budget:Food)  -1
+
+    2024/01/02 Lunch
+        Expenses:Food  $5
+        Assets:Cash
+    """
+
+    file = write_fixture("balance_no_auto_sample.ledger", ledger)
+
+    output =
+      capture_io(fn ->
+        ExLedger.CLI.main(["-f", file, "--no-auto", "balance"])
+      end)
+
+    refute output =~ "Budget:Food"
+  end
+
+  test "print --auto-only shows only generated postings" do
+    ledger = """
+    = /^Expenses:Food/
+        (Budget:Food)  -1
+
+    2024/01/02 Lunch
+        Expenses:Food  $5
+        Assets:Cash
+    """
+
+    file = write_fixture("print_auto_only_sample.ledger", ledger)
+
+    output =
+      capture_io(fn ->
+        ExLedger.CLI.main(["-f", file, "--auto-only", "print"])
+      end)
+
+    assert output =~ "2024/01/02 Lunch"
+    assert output =~ "Budget:Food"
+    refute output =~ "Expenses:Food  $5"
+    refute output =~ "Assets:Cash"
+  end
+
+  test "print --auto-only preserves metadata-only automated effects" do
+    ledger = """
+    = /^Expenses:/
+        ; business:
+        ; Category: Deductible
+
+    2024/01/02 Office
+        Expenses:Office  $100
+        Assets:Cash
+    """
+
+    file = write_fixture("print_auto_only_metadata_sample.ledger", ledger)
+
+    output =
+      capture_io(fn ->
+        ExLedger.CLI.main(["-f", file, "--auto-only", "print"])
+      end)
+
+    assert output =~ "2024/01/02 Office"
+    assert output =~ "Expenses:Office"
+    assert output =~ "; :business:"
+    assert output =~ "; Category: Deductible"
+    refute output =~ "Assets:Cash"
+  end
+
   test "print outputs ledger-formatted transactions" do
     ledger = """
     2024/01/01 Opening

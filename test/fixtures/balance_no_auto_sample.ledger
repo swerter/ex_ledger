@@ -1,0 +1,6 @@
+= /^Expenses:Food/
+    (Budget:Food)  -1
+
+2024/01/02 Lunch
+    Expenses:Food  $5
+    Assets:Cash

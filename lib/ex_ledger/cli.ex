@@ -1,7 +1,7 @@
 defmodule ExLedger.CLI do
   @moduledoc false
 
-  alias ExLedger.LedgerParser
+  alias ExLedger.{Automated, LedgerParser}
 
   @switches [
     file: :string,
@@ -11,7 +11,10 @@ defmodule ExLedger.CLI do
     basis: :boolean,
     flat: :boolean,
     no_total: :boolean,
-    yearly: :boolean
+    yearly: :boolean,
+    auto_apply: :boolean,
+    no_auto: :boolean,
+    auto_only: :boolean
   ]
   @aliases [f: :file, h: :help, E: :empty, s: :strict, B: :basis, Y: :yearly]
   @max_regex_length 256
@@ -62,6 +65,7 @@ defmodule ExLedger.CLI do
 
   defp parse_args(argv) do
     {opts, commands, _} = OptionParser.parse(argv, switches: @switches, aliases: @aliases)
+    auto_mode = auto_mode(opts)
 
     %{
       file: opts[:file],
@@ -73,7 +77,9 @@ defmodule ExLedger.CLI do
       basis?: opts[:basis] || false,
       flat?: opts[:flat] || false,
       no_total?: opts[:no_total] || false,
-      yearly?: opts[:yearly] || false
+      yearly?: opts[:yearly] || false,
+      auto_apply?: auto_mode != :no_auto,
+      auto_only?: auto_mode == :auto_only
     }
   end
 
@@ -101,7 +107,7 @@ defmodule ExLedger.CLI do
     flat = opts.flat? && not opts.basis?
 
     if yearly? do
-      run_yearly_balance(file, report_regex, strict?, empty?, opts.no_total?)
+      run_yearly_balance(file, report_regex, strict?, empty?, opts.no_total?, opts)
     else
       format_opts = [
         show_empty: empty?,
@@ -110,7 +116,7 @@ defmodule ExLedger.CLI do
         top_level_only: opts.basis?
       ]
 
-      with_resolved_transactions(file, fn resolved_transactions, accounts, _contents ->
+      with_resolved_transactions(file, opts, fn resolved_transactions, accounts, _contents ->
         run_balance_with_validation(
           resolved_transactions,
           accounts,
@@ -140,7 +146,7 @@ defmodule ExLedger.CLI do
     end
   end
 
-  defp run_yearly_balance(file, report_regex, strict?, empty?, no_total?) do
+  defp run_yearly_balance(file, report_regex, strict?, empty?, no_total?, opts) do
     format_opts = [show_empty: empty?, show_total: not no_total?]
 
     account_filter =
@@ -150,7 +156,7 @@ defmodule ExLedger.CLI do
         nil
       end
 
-    with_resolved_transactions(file, fn resolved_transactions, accounts, _contents ->
+    with_resolved_transactions(file, opts, fn resolved_transactions, accounts, _contents ->
       case maybe_validate_strict(resolved_transactions, accounts, strict?) do
         :ok ->
           resolved_transactions
@@ -164,10 +170,10 @@ defmodule ExLedger.CLI do
     end)
   end
 
-  defp handle_register(%{file: file, command_args: args}) do
+  defp handle_register(%{file: file, command_args: args} = opts) do
     account_pattern = first_arg(args)
 
-    with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+    with_resolved_transactions(file, opts, fn resolved_transactions, _accounts, _contents ->
       regex = compile_filter_regex(account_pattern)
 
       resolved_transactions
@@ -177,8 +183,8 @@ defmodule ExLedger.CLI do
     end)
   end
 
-  defp handle_print(%{file: file}) do
-    with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+  defp handle_print(%{file: file} = opts) do
+    with_resolved_transactions(file, opts, fn resolved_transactions, _accounts, _contents ->
       resolved_transactions
       |> LedgerParser.format_transactions()
       |> IO.write()
@@ -189,7 +195,8 @@ defmodule ExLedger.CLI do
     base_dir = Path.dirname(file)
     filename = Path.basename(file)
 
-    with_resolved_transactions(file, fn resolved_transactions, accounts, contents ->
+    with_parsed(file, fn transactions, accounts, contents ->
+      resolved_transactions = resolve_transactions(transactions, accounts)
       run_checks(resolved_transactions, accounts, contents, base_dir, filename, args, file)
     end)
   end
@@ -245,14 +252,14 @@ defmodule ExLedger.CLI do
     end)
   end
 
-  defp handle_list_command(%{file: file, command: command, command_args: args}) do
+  defp handle_list_command(%{file: file, command: command, command_args: args} = opts) do
     list_fun = Map.fetch!(list_command_fns(), command)
 
-    run_list_command(file, args, list_fun)
+    run_list_command(file, args, list_fun, opts)
   end
 
-  defp handle_stats(%{file: file}) do
-    with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+  defp handle_stats(%{file: file} = opts) do
+    with_resolved_transactions(file, opts, fn resolved_transactions, _accounts, _contents ->
       resolved_transactions
       |> LedgerParser.stats()
       |> LedgerParser.format_stats()
@@ -260,8 +267,8 @@ defmodule ExLedger.CLI do
     end)
   end
 
-  defp handle_budget(%{file: file}) do
-    with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+  defp handle_budget(%{file: file} = opts) do
+    with_resolved_transactions(file, opts, fn resolved_transactions, _accounts, _contents ->
       resolved_transactions
       |> LedgerParser.budget_report()
       |> LedgerParser.format_budget_report()
@@ -269,14 +276,14 @@ defmodule ExLedger.CLI do
     end)
   end
 
-  defp handle_forecast(%{file: file, command_args: args, empty?: empty?}) do
+  defp handle_forecast(%{file: file, command_args: args, empty?: empty?} = opts) do
     months =
       case args do
         [value] -> parse_positive_integer(value, 1)
         _ -> 1
       end
 
-    with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+    with_resolved_transactions(file, opts, fn resolved_transactions, _accounts, _contents ->
       resolved_transactions
       |> LedgerParser.forecast_balance(months)
       |> LedgerParser.format_balance(empty?)
@@ -303,14 +310,14 @@ defmodule ExLedger.CLI do
     end)
   end
 
-  defp handle_select(%{file: file, command_args: args}) do
+  defp handle_select(%{file: file, command_args: args} = opts) do
     query = Enum.join(args, " ")
 
     if query == "" do
       halt_error("select requires a query", 64)
     end
 
-    with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+    with_resolved_transactions(file, opts, fn resolved_transactions, _accounts, _contents ->
       case LedgerParser.select(resolved_transactions, query) do
         {:ok, fields, rows} ->
           LedgerParser.format_select(fields, rows)
@@ -322,10 +329,10 @@ defmodule ExLedger.CLI do
     end)
   end
 
-  defp handle_xact(%{file: file, command_args: args}) do
+  defp handle_xact(%{file: file, command_args: args} = opts) do
     case args do
       [date_string, payee_pattern] ->
-        with_resolved_transactions(file, fn resolved_transactions, _accounts, _contents ->
+        with_resolved_transactions(file, opts, fn resolved_transactions, _accounts, _contents ->
           with {:ok, date} <- LedgerParser.parse_date(date_string),
                {:ok, output} <-
                  LedgerParser.build_xact(resolved_transactions, date, payee_pattern) do
@@ -344,8 +351,8 @@ defmodule ExLedger.CLI do
     end
   end
 
-  defp run_list_command(file, args, list_fun) do
-    with_resolved_transactions(file, fn resolved_transactions, accounts, _contents ->
+  defp run_list_command(file, args, list_fun, opts) do
+    with_resolved_transactions(file, opts, fn resolved_transactions, accounts, _contents ->
       items = list_fun.(resolved_transactions, accounts)
 
       items
@@ -360,10 +367,29 @@ defmodule ExLedger.CLI do
     LedgerParser.resolve_transaction_aliases(transactions, accounts)
   end
 
-  defp with_resolved_transactions(file, fun) do
+  defp with_resolved_transactions(file, opts, fun) do
     with_parsed(file, fn transactions, accounts, contents ->
-      fun.(resolve_transactions(transactions, accounts), accounts, contents)
+      resolved_transactions =
+        transactions
+        |> resolve_transactions(accounts)
+        |> prepare_transactions(opts)
+
+      fun.(resolved_transactions, accounts, contents)
     end)
+  end
+
+  defp prepare_transactions(transactions, %{auto_only?: true}) do
+    transactions
+    |> Automated.apply_all()
+    |> effects_only(transactions)
+  end
+
+  defp prepare_transactions(transactions, %{auto_apply?: true}) do
+    Automated.apply_all(transactions)
+  end
+
+  defp prepare_transactions(transactions, _opts) do
+    Enum.reject(transactions, &Automated.automated?/1)
   end
 
   defp with_parsed(file, fun) do
@@ -421,6 +447,9 @@ defmodule ExLedger.CLI do
       "  -E, --empty   Show accounts whose total is zero",
       "      --flat    Flatten the balance report",
       "      --no-total Suppress summary totals",
+      "      --auto-apply Apply automated transactions (default)",
+      "      --no-auto Disable automated transactions",
+      "      --auto-only Show only automated transaction effects",
       "  -s, --strict  Require all accounts to be declared",
       "",
       "Commands:",
@@ -597,5 +626,55 @@ defmodule ExLedger.CLI do
       "failed to parse ledger file #{format_error_location(fallback_file, nil)}: #{format_parse_error(error)}",
       1
     )
+  end
+
+  defp effects_only(applied_transactions, original_transactions) do
+    original_regular_by_id =
+      original_transactions
+      |> Enum.reject(&Automated.automated?/1)
+      |> Map.new(fn txn -> {Map.fetch!(txn, :transaction_id), txn} end)
+
+    applied_transactions
+    |> Enum.map(fn applied ->
+      original = Map.fetch!(original_regular_by_id, Map.fetch!(applied, :transaction_id))
+      transaction_effect(applied, original)
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp transaction_effect(applied, original) do
+    original_postings = Map.get(original, :postings, [])
+    applied_postings = Map.get(applied, :postings, [])
+    derived_postings = Map.get(applied, :derived_postings, [])
+
+    changed_original_postings =
+      applied_postings
+      |> Enum.take(length(original_postings))
+      |> Enum.zip(original_postings)
+      |> Enum.reduce([], fn
+        {updated, baseline}, acc when updated != baseline -> [updated | acc]
+        _, acc -> acc
+      end)
+      |> Enum.reverse()
+
+    effect_postings = changed_original_postings ++ derived_postings
+
+    if effect_postings == [] do
+      nil
+    else
+      applied
+      |> Map.put(:postings, effect_postings)
+      |> Map.put(:derived_postings, derived_postings)
+    end
+  end
+
+  defp auto_mode(opts) do
+    opts
+    |> Enum.reduce(nil, fn
+      {:auto_apply, true}, _acc -> :auto_apply
+      {:no_auto, true}, _acc -> :no_auto
+      {:auto_only, true}, _acc -> :auto_only
+      _, acc -> acc
+    end)
   end
 end

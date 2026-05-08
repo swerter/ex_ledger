@@ -1,0 +1,7 @@
+= /^Expenses:/
+    ; business:
+    ; Category: Deductible
+
+2024/01/02 Office
+    Expenses:Office  $100
+    Assets:Cash

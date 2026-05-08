@@ -219,13 +219,22 @@ defmodule ExLedger.Parser.Transaction do
     first_line = Enum.at(lines, 0, "")
     trimmed_first = String.trim_leading(first_line)
     directive? = starts_with_directive?(trimmed_first)
-    min_postings = if directive?, do: 1, else: 2
+    automated? = starts_with_automated?(trimmed_first)
     postings_count = count_postings(lines)
+    metadata_count = count_metadata_lines(lines)
+
+    # For automated transactions, allow 0 postings if there are metadata lines
+    min_postings =
+      cond do
+        automated? and metadata_count > 0 -> 0
+        directive? -> 1
+        true -> 2
+      end
 
     [
       check_missing_predicate(trimmed_first),
       check_missing_period(trimmed_first),
-      check_directive_postings(directive?, postings_count, min_postings),
+      check_directive_postings(directive?, postings_count, min_postings, metadata_count),
       check_missing_date(directive?, first_line),
       check_missing_payee(directive?, first_line),
       check_invalid_indentation(lines),
@@ -251,13 +260,13 @@ defmodule ExLedger.Parser.Transaction do
     end
   end
 
-  defp check_directive_postings(true, postings_count, min_postings) do
-    if postings_count < min_postings do
+  defp check_directive_postings(true, postings_count, min_postings, metadata_count) do
+    if postings_count < min_postings and metadata_count == 0 do
       {:error, :insufficient_postings}
     end
   end
 
-  defp check_directive_postings(false, _postings_count, _min_postings), do: nil
+  defp check_directive_postings(false, _postings_count, _min_postings, _metadata_count), do: nil
 
   defp check_missing_date(false, first_line) do
     if not Regex.match?(~r/^\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}/, first_line) do
@@ -312,6 +321,16 @@ defmodule ExLedger.Parser.Transaction do
     |> Enum.drop(1)
     |> Enum.count(fn line ->
       Regex.match?(~r/^\s+[^\s;]/, line)
+    end)
+  end
+
+  @spec count_metadata_lines([String.t()]) :: non_neg_integer()
+  defp count_metadata_lines(lines) do
+    lines
+    |> Enum.drop(1)
+    |> Enum.count(fn line ->
+      # Count lines that are indented comments (metadata or tags)
+      Regex.match?(~r/^\s+;/, line)
     end)
   end
 

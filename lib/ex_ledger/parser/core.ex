@@ -339,6 +339,11 @@ defmodule ExLedger.Parser.Core do
     |> utf8_string([?a..?z, ?A..?Z, ?0..?9, ?_], min: 0)
     |> reduce({:join_metadata_key, []})
 
+  enrichment_key =
+    ascii_char([?A..?Z, ?a..?z, ?_])
+    |> utf8_string([?a..?z, ?A..?Z, ?0..?9, ?_, ?-], min: 0)
+    |> reduce({:join_metadata_key, []})
+
   # Inline comment
   inline_comment =
     ignore(optional_whitespace)
@@ -418,6 +423,8 @@ defmodule ExLedger.Parser.Core do
     ])
     |> ignore(optional(string("\n")))
 
+  line_end = lookahead(choice([string("\n"), eos()]))
+
   # Trailing comment line (ignored, for comments after all postings)
   trailing_comment_line =
     ignore(indentation)
@@ -452,11 +459,63 @@ defmodule ExLedger.Parser.Core do
     |> reduce({:build_transaction, []})
   )
 
+  enrichment_tag_line =
+    ignore(indentation)
+    |> ignore(ascii_string([?;], min: 1))
+    |> ignore(ascii_string([?\s], min: 0))
+    |> choice([
+      ignore(string(":"))
+      |> utf8_string([not: ?:], min: 1)
+      |> ignore(string(":"))
+      |> unwrap_and_tag(:metadata_tag),
+      enrichment_key
+      |> ignore(string(":"))
+      |> ignore(optional_whitespace)
+      |> concat(line_end)
+      |> unwrap_and_tag(:metadata_tag)
+    ])
+    |> ignore(optional(string("\n")))
+
+  enrichment_metadata_line =
+    ignore(indentation)
+    |> ignore(ascii_string([?;], min: 1))
+    |> ignore(ascii_string([?\s], min: 0))
+    |> concat(enrichment_key)
+    |> ignore(string(":"))
+    |> ignore(ascii_string([?\s], min: 0))
+    |> utf8_string([not: ?\n], min: 1)
+    |> reduce({:to_metadata, []})
+    |> ignore(optional(string("\n")))
+
+  enrichment_comment_line =
+    ignore(indentation)
+    |> ignore(ascii_string([?;], min: 1))
+    |> ignore(ascii_string([?\s], min: 0))
+    |> utf8_string([not: ?\n], min: 0)
+    |> unwrap_and_tag(:note_comment)
+    |> ignore(optional(string("\n")))
+
+  metadata_only_line =
+    choice([
+      enrichment_metadata_line,
+      enrichment_tag_line,
+      enrichment_comment_line
+    ])
+
+  # Automated transaction body - either postings OR metadata-only enrichment lines
+  automated_body =
+    times(
+      choice([
+        metadata_only_line,
+        posting_with_optional_amount
+      ]),
+      min: 1
+    )
+
   defparsec(
     :automated_transaction_parser,
     automated_header
-    |> times(transaction_metadata_line, min: 0)
-    |> times(posting, min: 1)
+    |> concat(automated_body)
     |> times(trailing_comment_line, min: 0)
     |> reduce({:build_transaction, []})
   )
@@ -790,7 +849,7 @@ defmodule ExLedger.Parser.Core do
 
   @spec build_transaction(list()) :: transaction()
   defp build_transaction(parts) do
-    {transaction, pending_metadata} =
+    {transaction, pending_metadata, standalone_tags} =
       Enum.reduce(
         parts,
         {%{
@@ -805,40 +864,45 @@ defmodule ExLedger.Parser.Core do
            predicate: nil,
            period: nil,
            postings: []
-         }, []},
+         }, [], []},
         fn
-          {:date, date}, {acc, pending} ->
-            {%{acc | date: date}, pending}
+          {:date, date}, {acc, pending, tags} ->
+            {%{acc | date: date}, pending, tags}
 
-          {:aux_date, aux_date}, {acc, pending} ->
-            {%{acc | aux_date: aux_date}, pending}
+          {:aux_date, aux_date}, {acc, pending, tags} ->
+            {%{acc | aux_date: aux_date}, pending, tags}
 
-          {:state, state}, {acc, pending} ->
-            {%{acc | state: state}, pending}
+          {:state, state}, {acc, pending, tags} ->
+            {%{acc | state: state}, pending, tags}
 
-          {:code, code}, {acc, pending} ->
-            {%{acc | code: code}, pending}
+          {:code, code}, {acc, pending, tags} ->
+            {%{acc | code: code}, pending, tags}
 
-          {:payee, payee}, {acc, pending} ->
-            {%{acc | payee: payee}, pending}
+          {:payee, payee}, {acc, pending, tags} ->
+            {%{acc | payee: payee}, pending, tags}
 
-          {:comment, comment}, {acc, pending} ->
-            {%{acc | comment: comment}, pending}
+          {:comment, comment}, {acc, pending, tags} ->
+            {%{acc | comment: comment}, pending, tags}
 
-          {:metadata_kv, key, value}, {acc, pending} ->
+          {:metadata_kv, key, value}, {acc, pending, tags} ->
             {
               %{acc | metadata: update_metadata(acc.metadata, key, value)},
-              [{key, value} | pending]
+              [{key, value} | pending],
+              tags
             }
 
-          {:predicate, predicate}, {acc, pending} ->
-            {%{acc | predicate: predicate}, pending}
+          # Standalone tags from metadata_only_line (for enrichment rules)
+          {:metadata_tag, tag}, {acc, pending, tags} ->
+            {acc, pending, [tag | tags]}
 
-          {:period, period}, {acc, pending} ->
-            {%{acc | period: period}, pending}
+          {:predicate, predicate}, {acc, pending, tags} ->
+            {%{acc | predicate: predicate}, pending, tags}
 
-          posting, {acc, pending} when is_map(posting) ->
-            {Map.update!(acc, :postings, &[posting | &1]), pending}
+          {:period, period}, {acc, pending, tags} ->
+            {%{acc | period: period}, pending, tags}
+
+          posting, {acc, pending, tags} when is_map(posting) ->
+            {Map.update!(acc, :postings, &[posting | &1]), pending, tags}
 
           _, acc ->
             acc
@@ -846,11 +910,20 @@ defmodule ExLedger.Parser.Core do
       )
 
     pending_metadata = Enum.reverse(pending_metadata)
+    standalone_tags = Enum.reverse(standalone_tags)
 
     postings =
       transaction.postings
       |> Enum.reverse()
-      |> apply_pending_metadata(pending_metadata)
+      |> apply_pending_enrichment(pending_metadata, standalone_tags)
+
+    # For metadata-only automated transactions, create a synthetic enrichment posting
+    postings =
+      if postings == [] and (pending_metadata != [] or standalone_tags != []) do
+        [create_enrichment_posting(pending_metadata, standalone_tags)]
+      else
+        postings
+      end
 
     kind =
       cond do
@@ -862,16 +935,51 @@ defmodule ExLedger.Parser.Core do
     %{transaction | kind: kind, postings: postings}
   end
 
-  defp apply_pending_metadata(postings, []), do: postings
-
-  defp apply_pending_metadata([first | rest], pending_metadata) do
-    updated_first =
-      Enum.reduce(pending_metadata, first, fn {key, value}, posting ->
-        %{posting | metadata: update_metadata(posting.metadata, key, value)}
+  defp create_enrichment_posting(metadata_pairs, tags) do
+    metadata =
+      Enum.reduce(metadata_pairs, %{}, fn {key, value}, acc ->
+        update_metadata(acc, key, value)
       end)
+
+    %{
+      account: nil,
+      amount: nil,
+      metadata: metadata,
+      tags: tags,
+      comments: [],
+      virtual: false,
+      must_balance: false,
+      cost: nil,
+      actual_date: nil,
+      effective_date: nil,
+      assertion: nil,
+      enrichment_only: true
+    }
+  end
+
+  defp apply_pending_enrichment(postings, [], []), do: postings
+
+  defp apply_pending_enrichment([first | rest], pending_metadata, pending_tags) do
+    updated_first =
+      first
+      |> apply_pending_metadata_to_posting(pending_metadata)
+      |> apply_pending_tags_to_posting(pending_tags)
 
     [updated_first | rest]
   end
 
-  defp apply_pending_metadata([], _pending_metadata), do: []
+  defp apply_pending_enrichment([], _pending_metadata, _pending_tags), do: []
+
+  defp apply_pending_metadata_to_posting(posting, pending_metadata) do
+    Enum.reduce(pending_metadata, posting, fn {key, value}, acc ->
+      %{acc | metadata: update_metadata(acc.metadata, key, value)}
+    end)
+  end
+
+  defp apply_pending_tags_to_posting(posting, []), do: posting
+
+  defp apply_pending_tags_to_posting(posting, pending_tags) do
+    existing_tags = Map.get(posting, :tags, [])
+    %{posting | tags: Enum.uniq(existing_tags ++ pending_tags)}
+  end
 end

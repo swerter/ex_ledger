@@ -140,6 +140,36 @@ defmodule ExLedger do
   defdelegate check_file_with_error(path), to: LedgerParser
 
   @doc """
+  Parses a ledger file.
+
+  ## Options
+
+  All options are passed to `parse_ledger/2`. Additionally:
+  - `:base_dir` defaults to the directory containing the file
+  - `:source_file` defaults to the filename
+
+  ## Examples
+
+      {:ok, result} = ExLedger.parse_file("journal.ledger")
+      {:ok, result} = ExLedger.parse_file("journal.ledger", strict: true)
+  """
+  @spec parse_file(String.t(), keyword()) ::
+          {:ok, LedgerParser.parse_result()} | {:error, term()}
+  def parse_file(path, opts \\ []) when is_binary(path) do
+    base_dir = Path.dirname(path)
+    filename = Path.basename(path)
+
+    with {:ok, contents} <- File.read(path) do
+      opts =
+        opts
+        |> Keyword.put_new(:base_dir, base_dir)
+        |> Keyword.put_new(:source_file, filename)
+
+      LedgerParser.parse_ledger(contents, opts)
+    end
+  end
+
+  @doc """
   Checks whether a ledger string parses successfully.
 
   ## Examples

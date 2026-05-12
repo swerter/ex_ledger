@@ -28,6 +28,7 @@ defmodule ExLedger.LedgerParser do
   @type parse_result :: %{
           transactions: [transaction()],
           accounts: %{String.t() => atom()},
+          account_subtypes: %{String.t() => String.t()},
           prices: [price_directive()],
           commodities: %{String.t() => commodity_definition()}
         }
@@ -43,6 +44,7 @@ defmodule ExLedger.LedgerParser do
 
   # Delegate to Parser.Accounts
   defdelegate extract_account_declarations(input), to: Accounts
+  defdelegate extract_account_subtypes(input), to: Accounts
   defdelegate parse_account_declaration(input), to: Accounts
   defdelegate resolve_account_name(account_name, account_map), to: Accounts
   defdelegate resolve_transaction_aliases(transactions, account_map), to: Accounts
@@ -146,7 +148,14 @@ defmodule ExLedger.LedgerParser do
   def parse_ledger(input, opts \\ [])
 
   def parse_ledger("", _opts) do
-    {:ok, %{transactions: [], accounts: %{}, prices: [], commodities: %{}}}
+    {:ok,
+     %{
+       transactions: [],
+       accounts: %{},
+       account_subtypes: %{},
+       prices: [],
+       commodities: %{}
+     }}
   end
 
   def parse_ledger(input, opts) when is_binary(input) do
@@ -159,7 +168,7 @@ defmodule ExLedger.LedgerParser do
     skip_assertions = Keyword.get(opts, :skip_assertions, false)
 
     case parse_ledger_with_includes_with_import(input, base_dir, seen_files, source_file, nil) do
-      {:ok, transactions, accounts} ->
+      {:ok, transactions, accounts, account_subtypes} ->
         # Validate balance assertions unless skipped
         case BalanceAssertions.validate_assertions(transactions, skip_assertions: skip_assertions) do
           :ok ->
@@ -173,6 +182,7 @@ defmodule ExLedger.LedgerParser do
              %{
                transactions: transactions,
                accounts: accounts,
+               account_subtypes: account_subtypes,
                prices: prices,
                commodities: commodities
              }}
@@ -212,6 +222,7 @@ defmodule ExLedger.LedgerParser do
          import_chain
        ) do
     accounts = Accounts.extract_account_declarations(input)
+    account_subtypes = Accounts.extract_account_subtypes(input)
 
     context = %ParseContext{
       base_dir: base_dir,
@@ -219,14 +230,15 @@ defmodule ExLedger.LedgerParser do
       source_file: source_file,
       import_chain: import_chain,
       accounts: accounts,
+      account_subtypes: account_subtypes,
       transactions: []
     }
 
     case expand_and_parse_with_includes(input, context, []) do
-      {:ok, transactions, final_accounts, _ctx} ->
+      {:ok, transactions, final_accounts, final_ctx} ->
         # Resolve aliases in transactions so account names are canonical
         resolved_transactions = Accounts.resolve_transaction_aliases(transactions, final_accounts)
-        {:ok, resolved_transactions, final_accounts}
+        {:ok, resolved_transactions, final_accounts, final_ctx.account_subtypes}
 
       {:error, _} = error ->
         error
@@ -325,7 +337,9 @@ defmodule ExLedger.LedgerParser do
         with {:ok, include_path} <- validate_include_path(filename, context),
              {:ok, content} <- File.read(include_path) do
           included_accounts = Accounts.extract_account_declarations(content)
+          included_subtypes = Accounts.extract_account_subtypes(content)
           new_accounts = Map.merge(context.accounts, included_accounts)
+          new_subtypes = Map.merge(context.account_subtypes, included_subtypes)
           new_seen = MapSet.put(context.seen_files, include_path)
           include_dir = Path.dirname(include_path)
           include_file = Path.basename(include_path)
@@ -336,7 +350,8 @@ defmodule ExLedger.LedgerParser do
               seen_files: new_seen,
               source_file: include_file,
               import_chain: new_import_chain,
-              accounts: new_accounts
+              accounts: new_accounts,
+              account_subtypes: new_subtypes
           }
 
           case expand_and_parse_with_includes(content, new_context, []) do
@@ -345,6 +360,7 @@ defmodule ExLedger.LedgerParser do
               updated_context = %{
                 context
                 | accounts: new_accounts,
+                  account_subtypes: new_subtypes,
                   seen_files: new_seen
               }
 
@@ -521,6 +537,7 @@ defmodule ExLedger.LedgerParser do
       source_file: source_file,
       import_chain: import_chain,
       accounts: %{},
+      account_subtypes: %{},
       transactions: []
     }
 
@@ -566,6 +583,7 @@ defmodule ExLedger.LedgerParser do
           transaction
           |> maybe_add_source_file(source_file)
           |> Map.put(:source_line, line_number)
+          |> Map.put(:transaction_id, build_transaction_id(source_file, line_number))
 
         {:cont, {:ok, [transaction | acc]}}
 
@@ -598,6 +616,10 @@ defmodule ExLedger.LedgerParser do
 
   defp maybe_add_source_file(transaction, nil), do: transaction
   defp maybe_add_source_file(transaction, file), do: Map.put(transaction, :source_file, file)
+
+  defp build_transaction_id(source_file, line_number) do
+    {source_file || "__input__", line_number}
+  end
 
   defp split_transactions_with_line_numbers(content) do
     content
@@ -709,6 +731,8 @@ defmodule ExLedger.LedgerParser do
          String.starts_with?(trimmed, "tag ") or
          String.starts_with?(trimmed, "payee ") or
          String.starts_with?(trimmed, "commodity ") or
+         String.starts_with?(trimmed, "subtype:") or
+         String.starts_with?(trimmed, "subtype ") or
          old_style_account_declaration?(trimmed))
   end
 

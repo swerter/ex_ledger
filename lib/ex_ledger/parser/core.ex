@@ -51,6 +51,7 @@ defmodule ExLedger.Parser.Core do
   @type account_declaration :: %{
           name: String.t(),
           type: :expense | :revenue | :asset | :liability | :equity,
+          subtype: String.t() | nil,
           aliases: [String.t()],
           assertions: [String.t()]
         }

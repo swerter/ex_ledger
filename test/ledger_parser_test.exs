@@ -678,6 +678,113 @@ defmodule ExLedger.LedgerParserTest do
     end
   end
 
+  describe "extract_account_subtypes/1" do
+    test "extracts subtype declared with colon separator" do
+      input = """
+      account Assets:Bank:Checking  ; type:asset
+              subtype: operating
+      """
+
+      assert LedgerParser.extract_account_subtypes(input) == %{
+               "Assets:Bank:Checking" => "operating"
+             }
+    end
+
+    test "extracts subtype declared with space separator" do
+      input = """
+      account Assets:Bank:Checking  ; type:asset
+              subtype operating
+      """
+
+      assert LedgerParser.extract_account_subtypes(input) == %{
+               "Assets:Bank:Checking" => "operating"
+             }
+    end
+
+    test "extracts subtype alongside aliases and assertions" do
+      input = """
+      account Assets:Bank:Checking  ; type:asset
+              alias checking
+              subtype: operating
+              assert balance >= 0
+      """
+
+      assert LedgerParser.extract_account_subtypes(input) == %{
+               "Assets:Bank:Checking" => "operating"
+             }
+
+      accounts = LedgerParser.extract_account_declarations(input)
+      assert accounts["Assets:Bank:Checking"] == :asset
+      assert accounts["checking"] == "Assets:Bank:Checking"
+    end
+
+    test "omits accounts without a subtype" do
+      input = """
+      account Assets:Bank:Checking  ; type:asset
+              subtype: operating
+      account Assets:Bank:Savings  ; type:asset
+      """
+
+      assert LedgerParser.extract_account_subtypes(input) == %{
+               "Assets:Bank:Checking" => "operating"
+             }
+    end
+
+    test "supports multiple accounts each with their own subtype" do
+      input = """
+      account Assets:Bank:Checking  ; type:asset
+              subtype: operating
+      account Assets:Bank:Reserve  ; type:asset
+              subtype: reserve
+      """
+
+      assert LedgerParser.extract_account_subtypes(input) == %{
+               "Assets:Bank:Checking" => "operating",
+               "Assets:Bank:Reserve" => "reserve"
+             }
+    end
+
+    test "last subtype declaration wins within the same block" do
+      input = """
+      account Assets:Bank:Checking  ; type:asset
+              subtype: draft
+              subtype: operating
+      """
+
+      assert LedgerParser.extract_account_subtypes(input) == %{
+               "Assets:Bank:Checking" => "operating"
+             }
+    end
+
+    test "parse_ledger surfaces subtypes in result" do
+      input = """
+      account Assets:Bank:Checking  ; type:asset
+              subtype: operating
+      account Expenses:Food  ; type:expense
+
+      2024/01/15 Lunch
+          Expenses:Food           $12.00
+          Assets:Bank:Checking
+      """
+
+      {:ok, result} = LedgerParser.parse_ledger(input, base_dir: ".")
+
+      assert result.account_subtypes == %{"Assets:Bank:Checking" => "operating"}
+    end
+
+    test "parse_ledger returns empty subtype map when none declared" do
+      input = """
+      2024/01/15 Lunch
+          Expenses:Food           $12.00
+          Assets:Bank:Checking
+      """
+
+      {:ok, result} = LedgerParser.parse_ledger(input, base_dir: ".")
+
+      assert result.account_subtypes == %{}
+    end
+  end
+
   describe "parse_ledger_with_includes/2 - file resolution" do
     setup do
       {:ok, test_dir: TestHelpers.tmp_dir!("ex_ledger_test")}

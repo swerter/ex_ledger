@@ -15,10 +15,33 @@ defmodule ExLedger.Parser.Accounts do
   @spec extract_account_declarations(String.t()) :: %{String.t() => atom() | String.t()}
   def extract_account_declarations(input) when is_binary(input) do
     input
-    |> String.split("\n")
-    |> parse_account_blocks([])
+    |> parse_blocks()
     |> build_account_map()
     |> expand_account_aliases()
+  end
+
+  @doc """
+  Extracts the `subtype:` value declared for each account.
+
+  Returns a map of canonical account name to subtype string. Accounts without a
+  declared subtype are omitted. Standalone aliases are not included; resolve
+  aliases via `resolve_account_name/2` before looking up a subtype.
+  """
+  @spec extract_account_subtypes(String.t()) :: %{String.t() => String.t()}
+  def extract_account_subtypes(input) when is_binary(input) do
+    input
+    |> parse_blocks()
+    |> Enum.reduce(%{}, fn
+      %{type: :alias}, acc -> acc
+      %{subtype: nil}, acc -> acc
+      %{name: name, subtype: subtype}, acc -> Map.put(acc, name, subtype)
+    end)
+  end
+
+  defp parse_blocks(input) do
+    input
+    |> String.split("\n")
+    |> parse_account_blocks([])
   end
 
   @doc """
@@ -100,6 +123,7 @@ defmodule ExLedger.Parser.Accounts do
         %{
           name: alias_name,
           type: :alias,
+          subtype: nil,
           aliases: [],
           assertions: [],
           target: account_name
@@ -147,11 +171,13 @@ defmodule ExLedger.Parser.Accounts do
   defp parse_account_block([first_line | rest]) do
     case parse_account_first_line(first_line) do
       {:ok, account_name, account_type} ->
-        {aliases, assertions} = Enum.reduce(rest, {[], []}, &parse_account_block_line/2)
+        {aliases, assertions, subtype} =
+          Enum.reduce(rest, {[], [], nil}, &parse_account_block_line/2)
 
         %{
           name: account_name,
           type: account_type,
+          subtype: subtype,
           aliases: Enum.reverse(aliases),
           assertions: Enum.reverse(assertions)
         }
@@ -184,25 +210,36 @@ defmodule ExLedger.Parser.Accounts do
     end
   end
 
-  defp parse_account_block_line(line, {aliases, assertions}) do
+  defp parse_account_block_line(line, {aliases, assertions, subtype}) do
     trimmed = String.trim(line)
 
     cond do
       trimmed == "" ->
-        {aliases, assertions}
+        {aliases, assertions, subtype}
 
       String.starts_with?(trimmed, "alias ") ->
         alias_name = String.trim_leading(trimmed, "alias") |> String.trim()
-        {[alias_name | aliases], assertions}
+        {[alias_name | aliases], assertions, subtype}
 
       String.starts_with?(trimmed, "assert ") ->
         assertion = String.trim_leading(trimmed, "assert") |> String.trim()
-        {aliases, [assertion | assertions]}
+        {aliases, [assertion | assertions], subtype}
+
+      String.starts_with?(trimmed, "subtype:") ->
+        value = trimmed |> String.trim_leading("subtype:") |> String.trim()
+        {aliases, assertions, normalize_subtype(value, subtype)}
+
+      String.starts_with?(trimmed, "subtype ") ->
+        value = trimmed |> String.trim_leading("subtype") |> String.trim()
+        {aliases, assertions, normalize_subtype(value, subtype)}
 
       true ->
-        {aliases, assertions}
+        {aliases, assertions, subtype}
     end
   end
+
+  defp normalize_subtype("", current), do: current
+  defp normalize_subtype(value, _current), do: value
 
   @spec build_account_map([map()]) :: %{String.t() => atom() | String.t()}
   defp build_account_map(account_declarations) do

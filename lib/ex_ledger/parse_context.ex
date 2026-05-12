@@ -3,7 +3,15 @@ defmodule ExLedger.ParseContext do
   Context struct for tracking state during ledger file parsing with includes.
   """
 
-  defstruct [:base_dir, :seen_files, :source_file, :import_chain, :accounts, :transactions]
+  defstruct [
+    :base_dir,
+    :seen_files,
+    :source_file,
+    :import_chain,
+    :accounts,
+    :account_subtypes,
+    :transactions
+  ]
 
   @type import_chain_entry :: {String.t(), non_neg_integer()}
 
@@ -13,6 +21,7 @@ defmodule ExLedger.ParseContext do
           source_file: String.t() | nil,
           import_chain: [import_chain_entry()] | nil,
           accounts: %{String.t() => atom()},
+          account_subtypes: %{String.t() => String.t()},
           transactions: [map()]
         }
 end

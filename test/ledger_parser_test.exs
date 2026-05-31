@@ -146,8 +146,8 @@ defmodule ExLedger.LedgerParserTest do
 
       assert {:ok, %{transactions: [transaction]}} = LedgerParser.parse_ledger(input)
 
-      [_first_posting, second_posting] = transaction.postings
-      attachments = Map.get(second_posting.metadata, "Attachment")
+      [first_posting, _second_posting] = transaction.postings
+      attachments = Map.get(first_posting.metadata, "Attachment")
 
       assert is_list(attachments)
       assert length(attachments) == 2

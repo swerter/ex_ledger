@@ -336,8 +336,8 @@ defmodule ExLedger.Parser.Core do
   indentation = ascii_string([?\s, ?\t], min: 1)
 
   metadata_key =
-    ascii_char([?A..?Z])
-    |> utf8_string([?a..?z, ?A..?Z, ?0..?9, ?_], min: 0)
+    ascii_char([?A..?Z, ?a..?z, ?_])
+    |> utf8_string([?a..?z, ?A..?Z, ?0..?9, ?_, ?-], min: 0)
     |> reduce({:join_metadata_key, []})
 
   enrichment_key =
@@ -433,10 +433,13 @@ defmodule ExLedger.Parser.Core do
     |> ignore(utf8_string([not: ?\n], min: 0))
     |> ignore(optional(string("\n")))
 
-  # Posting with notes
+  # Posting with notes. Notes may appear before the posting line
+  # (legacy form) or after it (ledger-cli convention). Notes between
+  # two postings are greedy-claimed by the preceding posting.
   posting =
     times(note_line, min: 0)
     |> concat(posting_with_optional_amount)
+    |> times(note_line, min: 0)
     |> reduce({:attach_notes_to_posting, []})
 
   transaction_metadata_line =
@@ -750,14 +753,14 @@ defmodule ExLedger.Parser.Core do
 
   @spec attach_notes_to_posting(list()) :: posting()
   defp attach_notes_to_posting(items) do
-    {notes, [posting]} =
+    {leading, [posting | trailing]} =
       Enum.split_while(items, fn
         %{account: _} -> false
         _ -> true
       end)
 
     {metadata, tags, comments, actual_date, effective_date} =
-      Enum.reduce(notes, {%{}, [], [], nil, nil}, fn
+      Enum.reduce(leading ++ trailing, {%{}, [], [], nil, nil}, fn
         {:metadata_kv, key, value}, {meta, tags, comments, actual, effective} ->
           updated_meta = update_metadata(meta, key, value)
           {updated_meta, tags, comments, actual, effective}

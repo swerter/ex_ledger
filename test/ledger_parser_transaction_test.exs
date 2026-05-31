@@ -556,6 +556,44 @@ defmodule ExLedger.LedgerParserTransactionTest do
              }
     end
 
+    test "parses lowercase and hyphenated metadata keys at transaction level" do
+      input = """
+      2026-05-13 * Buy BTC
+          ; asset_id: BTC
+          ; period: 2026-Q2
+          ; trade-id: abc-123
+          Assets:Crypto:BTC                0.5 BTC
+          Assets:Bank:Checking
+      """
+
+      transaction = parse_transaction!(input)
+
+      assert transaction.metadata == %{
+               "asset_id" => "BTC",
+               "period" => "2026-Q2",
+               "trade-id" => "abc-123"
+             }
+    end
+
+    test "parses lowercase and hyphenated metadata keys on a posting" do
+      input = """
+      2026-05-13 * Buy BTC
+          Assets:Crypto:BTC                0.5 BTC
+          ; lot_ref: lot_42
+          ; trade-id: abc-123
+          Assets:Bank:Checking
+      """
+
+      transaction = parse_transaction!(input)
+
+      [btc_posting, _checking] = transaction.postings
+
+      assert btc_posting.metadata == %{
+               "lot_ref" => "lot_42",
+               "trade-id" => "abc-123"
+             }
+    end
+
     test "parses posting notes with spaces after semicolon" do
       input = """
       2009/11/01 Panera Bread
@@ -569,6 +607,77 @@ defmodule ExLedger.LedgerParserTransactionTest do
       [posting1, _posting2] = transaction.postings
       assert posting1.metadata == %{"Type" => "Coffee"}
       assert posting1.comments == []
+    end
+
+    test "parses multi-currency transfer with unicode payee and posting metadata" do
+      input = """
+      2026-05-13 * Transfer Wise → PostFinance
+          Assets:Bank:PostFinance:CHF       8000.00 CHF
+          ; Id: ABC123
+          ; PostfinanceTransactionId: pf-xyz
+          Assets:Bank:Wise:USD            -10000.00 USD
+          ; WiseTransactionId: wise-abc
+      """
+
+      transaction = parse_transaction!(input)
+
+      assert transaction.date == ~D[2026-05-13]
+      assert transaction.payee == "Transfer Wise → PostFinance"
+      assert transaction.state == :cleared
+
+      [chf_posting, usd_posting] = transaction.postings
+
+      assert chf_posting.account == "Assets:Bank:PostFinance:CHF"
+      assert chf_posting.amount.value == Decimal.new("8000.00")
+      assert chf_posting.amount.currency == "CHF"
+
+      assert usd_posting.account == "Assets:Bank:Wise:USD"
+      assert usd_posting.amount.value == Decimal.new("-10000.00")
+      assert usd_posting.amount.currency == "USD"
+
+      # Notes after a posting attach to that posting (ledger-cli convention).
+      assert chf_posting.metadata == %{
+               "Id" => "ABC123",
+               "PostfinanceTransactionId" => "pf-xyz"
+             }
+
+      assert usd_posting.metadata == %{"WiseTransactionId" => "wise-abc"}
+    end
+
+    test "trailing posting notes attach to the preceding posting, not the following" do
+      input = """
+      2024/01/01 Coffee shop
+          Expenses:Food               $4.50
+          ; Type: Coffee
+          ; :Morning:
+          ; Drank an espresso
+          Assets:Checking
+      """
+
+      transaction = parse_transaction!(input)
+      [food_posting, checking_posting] = transaction.postings
+
+      assert food_posting.metadata == %{"Type" => "Coffee"}
+      assert food_posting.tags == ["Morning"]
+      assert food_posting.comments == ["Drank an espresso"]
+
+      assert checking_posting.metadata == %{}
+      assert checking_posting.tags == []
+      assert checking_posting.comments == []
+    end
+
+    test "notes after the final posting attach to that posting" do
+      input = """
+      2024/01/01 Coffee shop
+          Expenses:Food               $4.50
+          Assets:Checking
+          ; Reference: REF-001
+      """
+
+      transaction = parse_transaction!(input)
+      [_food_posting, checking_posting] = transaction.postings
+
+      assert checking_posting.metadata == %{"Reference" => "REF-001"}
     end
 
     test "parses transaction with trailing currency amounts" do

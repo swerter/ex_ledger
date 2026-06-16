@@ -5,7 +5,7 @@ defmodule ExLedger.MixProject do
     [
       app: :ex_ledger,
       version: "0.6.2",
-      elixir: "~> 1.19",
+      elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       package: package(),

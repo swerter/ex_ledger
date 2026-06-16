@@ -36,6 +36,26 @@ defmodule ExLedger.LedgerCLI do
     run(["-f", file, command | args], opts)
   end
 
+  @doc """
+  Runs `ledger xml` for a specific ledger file.
+
+  Returns the raw XML output from ledger-cli.
+
+  ## Options
+
+  - `:ledger_bin` - Path to ledger binary (default: "ledger")
+  - `:cmd_opts` - Additional options passed to `System.cmd/3`
+
+  ## Example
+
+      {:ok, xml} = ExLedger.LedgerCLI.xml("/tmp/ledger.dat")
+  """
+  @spec xml(String.t(), [String.t()], keyword()) :: {:ok, String.t()} | {:error, cmd_error()}
+  def xml(file, args \\ [], opts \\ [])
+      when is_binary(file) and is_list(args) and is_list(opts) do
+    run_with_file(file, "xml", args, opts)
+  end
+
   defp build_cmd_opts(opts) do
     Keyword.merge([stderr_to_stdout: true], Keyword.get(opts, :cmd_opts, []))
   end

@@ -52,15 +52,29 @@ defmodule ExLedger.EntryFormatter do
 
   defp format_posting_amount_with_assertion(posting) do
     amount = format_posting_amount(Map.get(posting, :amount))
+    cost = format_posting_cost(Map.get(posting, :cost))
     assertion = format_posting_amount(Map.get(posting, :assertion))
 
     case {amount, assertion} do
       {"", ""} -> ""
       {"", assertion_str} -> "0 = #{assertion_str}"
-      {amount_str, ""} -> amount_str
-      {amount_str, assertion_str} -> "#{amount_str} = #{assertion_str}"
+      {amount_str, ""} -> amount_str <> cost
+      {amount_str, assertion_str} -> "#{amount_str}#{cost} = #{assertion_str}"
     end
   end
+
+  defp format_posting_cost(nil), do: ""
+
+  defp format_posting_cost(%{type: type, amount: amount}) do
+    operator = if type == :total, do: "@@", else: "@"
+
+    case format_posting_amount(amount) do
+      "" -> ""
+      amount_str -> " #{operator} #{amount_str}"
+    end
+  end
+
+  defp format_posting_cost(_), do: ""
 
   defp format_posting_amount(nil), do: ""
   defp format_posting_amount(""), do: ""
